@@ -197,15 +197,41 @@ func fetchUsage(dataDir: String) async throws -> Usage {
         guard code == 200 else { throw usageError(code == 401 || code == 403 ? "session expired" : "HTTP \(code)") }
         return try JSONSerialization.jsonObject(with: data)
     }
-    guard let orgs = try await get("/organizations") as? [[String: Any]],
-          let org = orgs.first?["uuid"] as? String
+    guard let orgs = try await get("/organizations") as? [[String: Any]], !orgs.isEmpty
     else { throw usageError("no organization") }
-    guard let j = try await get("/organizations/\(org)/usage") as? [String: Any]
-    else { throw usageError("unexpected response") }
-    func pct(_ k: String) -> Double? { (j[k] as? [String: Any])?["utilization"] as? Double }
-    func reset(_ k: String) -> Date? { parseISODate((j[k] as? [String: Any])?["resets_at"]) }
-    return Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"),
-                 fiveHourReset: reset("five_hour"), sevenDayReset: reset("seven_day"), error: nil)
+    func number(_ v: Any?) -> Double? {
+        if let n = v as? NSNumber { return n.doubleValue }
+        if let s = v as? String { return Double(s) }
+        return nil
+    }
+    // An account can belong to several organizations (API/Console, team, personal);
+    // only some carry chat usage limits, so try each until one reports numbers.
+    var raw: [[String: Any]] = []
+    var best: Usage?
+    for o in orgs {
+        guard let id = o["uuid"] as? String,
+              let j = try? await get("/organizations/\(id)/usage") as? [String: Any] else { continue }
+        func pct(_ k: String) -> Double? { number((j[k] as? [String: Any])?["utilization"]) }
+        func reset(_ k: String) -> Date? { parseISODate((j[k] as? [String: Any])?["resets_at"]) }
+        let u = Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"),
+                      fiveHourReset: reset("five_hour"), sevenDayReset: reset("seven_day"), error: nil)
+        raw.append(["org": id, "name": o["name"] ?? "", "capabilities": o["capabilities"] ?? [], "usage": j])
+        if u.fiveHour != nil || u.sevenDay != nil { return u }
+        best = best ?? u
+    }
+    writeUsageDebug(dataDir: dataDir, raw: raw)
+    return best ?? Usage(fiveHour: nil, sevenDay: nil, error: "unexpected response")
+}
+
+// When no organization reports usage, keep the raw replies (no cookies) so the
+// cause can be inspected: ~/Library/Logs/Claude Profiles/usage-debug.json
+private func writeUsageDebug(dataDir: String, raw: [[String: Any]]) {
+    let dir = NSHomeDirectory() + "/Library/Logs/Claude Profiles"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let payload: [String: Any] = ["dataDir": dataDir, "date": ISO8601DateFormatter().string(from: Date()), "orgs": raw]
+    if let d = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
+        try? d.write(to: URL(fileURLWithPath: dir + "/usage-debug-\((dataDir as NSString).lastPathComponent).json"))
+    }
 }
 
 // MARK: - System integrations
