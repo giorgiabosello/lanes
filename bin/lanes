@@ -1,17 +1,18 @@
 #!/bin/zsh
-# cdp — Claude Desktop Profiles
+# lanes — Lanes for Claude: several Claude Desktop accounts side by side
 #
 # Runs multiple Claude Desktop accounts side by side on macOS by giving each
 # profile its own --user-data-dir, and makes each profile launchable from
 # Spotlight in two ways:
 #
 #   1. A per-profile launcher app:  "Claude Work.app", "Claude Personal.app"
-#   2. A single chooser app:        "Claude Profiles.app" — a native picker
+#   2. A single manager app:        "Lanes.app" — a menu bar app (or, without
+#      a Swift toolchain, a native picker
 #      dialog that lists every profile (plus your default install) and can
 #      also add and remove profiles without touching the terminal.
 #
 # Profiles are discovered by convention, not by a registry file: any folder
-# matching ~/Library/Application Support/Claude-<Name> is a profile. Delete
+# in ~/Library/Application Support/Lanes/profiles is a profile. Delete
 # the folder and the launcher app, and the profile is gone.
 #
 # The chooser bundles a copy of this script in its Resources and shells out
@@ -25,24 +26,31 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-CDP_VERSION="0.6.0"
+LANES_VERSION="0.7.0"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
-BUNDLE_PREFIX="com.claude-desktop-profiles"
-CHOOSER_NAME="Claude Profiles"
-CACHE_DIR="$HOME/Library/Caches/claude-desktop-profiles"
+# The manager app's bundle id; every other id hangs off it (the widget's
+# must, to be accepted as its extension).
+BUNDLE_PREFIX="io.github.pego.lanes"
+APP_NAME="Lanes"
+CACHE_DIR="$HOME/Library/Caches/Lanes"
+# Everything Lanes keeps: profiles, app clones, the usage snapshot and history.
+DATA_DIR="$APP_SUPPORT/Lanes"
 # Per-profile clones of Claude.app (APFS copy-on-write) live here, outside
 # Spotlight's index, so nobody launches one without its --user-data-dir.
-CLONES_DIR="$APP_SUPPORT/claude-desktop-profiles/apps"
-# LaunchAgent running `cdp watch`: re-homes clones that got relaunched
+CLONES_DIR="$DATA_DIR/apps"
+# One folder per profile, named after it: Electron's --user-data-dir for that
+# Claude, plus its Claude Code config and its color.
+PROFILES_DIR="$DATA_DIR/profiles"
+# LaunchAgent running `lanes watch`: re-homes clones that got relaunched
 # without their --user-data-dir (see adopt_strays).
-WATCH_LABEL="${CDP_WATCH_LABEL:-$BUNDLE_PREFIX.watch}"  # override: tests
+WATCH_LABEL="${LANES_WATCH_LABEL:-$BUNDLE_PREFIX.watch}"  # override: tests
 WATCH_PLIST="$HOME/Library/LaunchAgents/$WATCH_LABEL.plist"
 
 # Per-profile icon colors: hue rotation (degrees) applied to Claude's icon.
 # The white spark is unaffected by hue shifts; only the orange square moves.
-# A profile's color lives in <dataDir>/.cdp-color so it travels with the
+# A profile's color lives in <dataDir>/.lanes-color so it travels with the
 # profile folder — consistent with the no-registry design.
 typeset -A HUES=(
   orange 0
@@ -81,30 +89,30 @@ displayify() {
   print -- "${(j: :)out}"
 }
 
-# The manager app ("Claude Profiles"): the downloaded release in
+# The manager app ("Lanes"): the downloaded release in
 # /Applications or a local build in ~/Applications. Prefers the copy running
 # this script, so launchers and CLI symlinks find the same one.
 manager_app() {
   local c
-  for c in "${SCRIPT_PATH:h:h:h}" "/Applications/$CHOOSER_NAME.app" "$LAUNCHER_DIR/$CHOOSER_NAME.app"; do
-    [[ "${c:t}" == "$CHOOSER_NAME.app" && -d "$c" ]] && { print -- "$c"; return 0 }
+  for c in "${SCRIPT_PATH:h:h:h}" "/Applications/$APP_NAME.app" "$LAUNCHER_DIR/$APP_NAME.app"; do
+    [[ "${c:t}" == "$APP_NAME.app" && -d "$c" ]] && { print -- "$c"; return 0 }
   done
   return 1
 }
 
 # The SwiftUI manager, as opposed to the AppleScript chooser at the same name.
 is_swiftui_manager() {
-  [[ -x "$1/Contents/MacOS/ClaudeProfiles" ]]
+  [[ -x "$1/Contents/MacOS/Lanes" ]]
 }
 
-# Compiles Swift sources into one binary for each arch in $CDP_ARCHS (default:
-# this Mac's), merged with lipo. The release sets CDP_ARCHS="arm64 x86_64".
+# Compiles Swift sources into one binary for each arch in $LANES_ARCHS (default:
+# this Mac's), merged with lipo. The release sets LANES_ARCHS="arm64 x86_64".
 swift_compile() {
   local out="$1" arch
   shift
   local -a slices=()
-  for arch in ${=CDP_ARCHS:-$(uname -m)}; do
-    swiftc -O -target "$arch-apple-macos${CDP_MIN_MACOS:-13.0}" -o "$out.$arch" "$@" || return 1
+  for arch in ${=LANES_ARCHS:-$(uname -m)}; do
+    swiftc -O -target "$arch-apple-macos${LANES_MIN_MACOS:-13.0}" -o "$out.$arch" "$@" || return 1
     slices+=("$out.$arch")
   done
   lipo -create -output "$out" $slices
@@ -118,9 +126,9 @@ swift_compile() {
 #
 # It lives inside a minimal .app bundle, not as a bare binary: macOS names a
 # process after the bundle it runs from, so Activity Monitor, TCC prompts and
-# any Dock flash show "Claude Profiles Helper" with the manager's grid icon
+# any Dock flash show "Lanes Helper" with the manager's grid icon
 # instead of an anonymous "tinticon".
-HELPER_NAME="$CHOOSER_NAME Helper"
+HELPER_NAME="$APP_NAME Helper"
 ensure_tint_tool() {
   local bundle="$CACHE_DIR/$HELPER_NAME.app"
   local tool="$bundle/Contents/MacOS/$HELPER_NAME"
@@ -357,7 +365,15 @@ has_custom_icon() {
 # `set -euo pipefail` a no-match grep (exit 1) would otherwise kill the
 # whole script at the call site's assignment.
 instance_pid() {
-  ps -axo pid=,command= 2>/dev/null | grep -F -- "--user-data-dir=$1" | grep -F "/Contents/MacOS/Claude" | grep -v Helper | grep -v grep | awk '{print $1}' | head -1 || true
+  # The whole path, not a prefix: "Work" must not match a running "Workshop".
+  local line flag="--user-data-dir=$1"
+  ps -axo pid=,command= 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == *"/Contents/MacOS/Claude "* && "$line" != *Helper* ]] || continue
+    [[ "$line" == *"$flag" || "$line" == *"$flag "* ]] || continue
+    line="${line##[[:space:]]#}"
+    print -- "${line%% *}"
+    break
+  done || true
 }
 
 # Claude Code's config dir for this profile. --user-data-dir only scopes
@@ -481,8 +497,8 @@ ensure_clone() {
 }
 
 color_of_profile() {
-  # Reads <dataDir>/.cdp-color; empty/missing means orange (untinted).
-  local f="$1/.cdp-color"
+  # Reads <dataDir>/.lanes-color; empty/missing means orange (untinted).
+  local f="$1/.lanes-color"
   [[ -f "$f" ]] && print -- "$(head -1 "$f" | tr -d '[:space:]')" || print -- "orange"
 }
 
@@ -521,21 +537,21 @@ compile_launcher() {
 }
 
 profile_dirs() {
-  print -l -- "$APP_SUPPORT"/Claude-*(N/)
+  print -l -- "$PROFILES_DIR"/*(N/)
 }
 
-# When the chooser/GUI app invokes us (CDP_FROM_CHOOSER=1) we must not rebuild
+# When the chooser/GUI app invokes us (LANES_FROM_CHOOSER=1) we must not rebuild
 # the chooser: we'd be rm -rf'ing the bundle that is currently running us.
-# We also skip when the installed "Claude Profiles" is the compiled SwiftUI
+# We also skip when the installed "Lanes" is the compiled SwiftUI
 # app — rebuilding would silently downgrade it to the AppleScript dialog.
 rebuild_chooser_unless_nested() {
-  [[ "${CDP_FROM_CHOOSER:-}" == "1" ]] && return 0
+  [[ "${LANES_FROM_CHOOSER:-}" == "1" ]] && return 0
   local m
   m=$(manager_app) && is_swiftui_manager "$m" && return 0
   cmd_chooser --quiet
 }
 
-# The launcher is a fire-and-forget button: it calls the bundled cdp's
+# The launcher is a fire-and-forget button: it calls the bundled lanes's
 # `launch`, which starts the profile from its own Claude.app clone (whose
 # Dock tile wears the profile color and owns the window) or focuses the
 # already-running instance, then the applet exits. stderr stays attached so
@@ -547,25 +563,25 @@ build_launcher() {
   cat > "$tmp/launcher.applescript" <<EOF
 on run
 	try
-		do shell script "/bin/zsh " & quoted form of (POSIX path of (path to me) & "Contents/Resources/cdp") & " launch " & quoted form of "$slug" & " > /dev/null"
+		do shell script "/bin/zsh " & quoted form of (POSIX path of (path to me) & "Contents/Resources/lanes") & " launch " & quoted form of "$slug" & " > /dev/null"
 	on error msg
 		display alert "Could not launch Claude $display" message msg as critical
 	end try
 end run
 EOF
-  compile_launcher "$tmp/launcher.applescript" "$app_path" "$BUNDLE_PREFIX.$slug" "$claude_app" "$(hue_for_color "$color")"
+  compile_launcher "$tmp/launcher.applescript" "$app_path" "$BUNDLE_PREFIX.profile.$slug" "$claude_app" "$(hue_for_color "$color")"
   rm -rf "$tmp"
 
-  # Bundle cdp so the launcher drives the same launch path as the GUI and
+  # Bundle lanes so the launcher drives the same launch path as the GUI and
   # CLI, then re-sign (the copy broke the seal).
-  bundle_cdp "$app_path"
+  bundle_script "$app_path"
   /usr/bin/codesign --force --sign - "$app_path" 2>/dev/null || true
 }
 
-# Copies this script into the bundle's Resources. A cdp from the downloaded
+# Copies this script into the bundle's Resources. A lanes from the downloaded
 # app carries its quarantine flag, which every copy inherits (even cp -X).
-bundle_cdp() {
-  local dst="$1/Contents/Resources/cdp"
+bundle_script() {
+  local dst="$1/Contents/Resources/lanes"
   cp "$SCRIPT_PATH" "$dst"
   chmod +x "$dst"
   xattr -d com.apple.quarantine "$dst" 2>/dev/null || true
@@ -579,8 +595,8 @@ bundle_cdp() {
 sync_install() {
   local claude_app d display
   claude_app=$(find_claude_app)
-  for d in "$APP_SUPPORT"/Claude-*(N/); do
-    display="${${d:t}#Claude-}"
+  for d in "$PROFILES_DIR"/*(N/); do
+    display="${d:t}"
     [[ -d "$LAUNCHER_DIR/Claude $display.app" ]] || continue
     build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" "$claude_app"
   done
@@ -594,13 +610,13 @@ sync_install() {
 
 cmd_add() {
   local raw="${1:-}" color=""
-  [[ -n "$raw" ]] || err "Usage: cdp add <name> [--color <color>]   (e.g. cdp add personal --color blue)"
+  [[ -n "$raw" ]] || err "Usage: lanes add <name> [--color <color>]   (e.g. lanes add personal --color blue)"
   [[ "${2:-}" == "--color" && -n "${3:-}" ]] && color="$3"
   local slug display data_dir app_path claude_app
   slug=$(slugify "$raw")
   [[ -n "$slug" ]] || err "Name must contain at least one letter or digit."
   display=$(displayify "$slug")
-  data_dir="$APP_SUPPORT/Claude-$display"
+  data_dir="$PROFILES_DIR/$display"
   app_path="$LAUNCHER_DIR/Claude $display.app"
   claude_app=$(find_claude_app)
 
@@ -614,7 +630,7 @@ cmd_add() {
   # new one is given explicitly.
   [[ -z "$color" ]] && color=$(color_of_profile "$data_dir")
   [[ -n "${HUES[$color]+x}" ]] || err "Unknown color '$color'. Available: ${(k)HUES}"
-  print -- "$color" > "$data_dir/.cdp-color"
+  print -- "$color" > "$data_dir/.lanes-color"
 
   build_launcher "$slug" "$display" "$color" "$claude_app"
 
@@ -627,7 +643,7 @@ cmd_add() {
   info "Launcher:     $app_path  (Spotlight: 'Claude $display')"
   if (( ! existed )); then
     print
-    info "First launch: with the Claude Profiles app running, just open the launcher"
+    info "First launch: with the Lanes app running, just open the launcher"
     info "and sign in; it sends the claude:// login link to the right profile. Without"
     info "it, QUIT every other Claude window first (the link lands on whichever"
     info "instance is running). After that all profiles can run simultaneously."
@@ -642,14 +658,14 @@ cmd_chooser() {
   # Same Spotlight name as the SwiftUI app: building here would replace or
   # duplicate the GUI.
   if [[ "${1:-}" != "--force" ]] && m=$(manager_app) && is_swiftui_manager "$m"; then
-    err "The SwiftUI app is installed at $m; 'cdp chooser' would replace or duplicate it. Use 'cdp chooser --force' to build it anyway."
+    err "The SwiftUI app is installed at $m; 'lanes chooser' would replace or duplicate it. Use 'lanes chooser --force' to build it anyway."
   fi
   claude_app=$(find_claude_app)
   tmp=$(mktemp -d)
 
-  # The chooser discovers profiles at runtime by listing Claude-* folders, so
-  # it never needs rebuilding when profiles change — we rebuild on `cdp add`
-  # only to keep the bundled cdp copy, icon, and signature fresh.
+  # The chooser discovers profiles at runtime by listing the profile folders, so
+  # it never needs rebuilding when profiles change — we rebuild on `lanes add`
+  # only to keep the bundled lanes copy, icon, and signature fresh.
   cat > "$tmp/chooser.applescript" <<'EOF'
 property addLabel : "+   Add a profile…"
 property removeLabel : "–   Remove a profile…"
@@ -664,7 +680,7 @@ on run
 		end repeat
 		set end of opts to addLabel
 		if (count of names) > 0 then set end of opts to removeLabel
-		set choice to choose from list opts with title "Claude Profiles" with prompt "Launch Claude with profile:" default items {"Default"}
+		set choice to choose from list opts with title "Lanes" with prompt "Launch Claude with profile:" default items {"Default"}
 		if choice is false then return
 		set choice to (item 1 of choice) as text
 		if choice is addLabel then
@@ -676,7 +692,7 @@ on run
 			return
 		else
 			try
-				do shell script cdpCommand() & " launch " & quoted form of choice & " > /dev/null"
+				do shell script lanesCommand() & " launch " & quoted form of choice & " > /dev/null"
 			on error msg
 				display alert "Could not launch Claude " & choice message msg as critical
 			end try
@@ -686,28 +702,28 @@ on run
 end run
 
 on profileNames(appSupport)
-	set raw to do shell script "ls -d " & quoted form of appSupport & "Claude-*/ 2>/dev/null | sed 's|/$||; s|.*/Claude-||' ; true"
+	set raw to do shell script "ls -d " & quoted form of (appSupport & "Lanes/profiles/") & "*/ 2>/dev/null | sed 's|/$||; s|.*/||' ; true"
 	if raw is "" then return {}
 	return paragraphs of raw
 end profileNames
 
--- The cdp script bundled inside this app's Resources. GUI actions shell out
+-- The lanes script bundled inside this app's Resources. GUI actions shell out
 -- to it so the CLI and the chooser share one implementation.
-on cdpCommand()
-	return "CDP_FROM_CHOOSER=1 /bin/zsh " & quoted form of (POSIX path of (path to me) & "Contents/Resources/cdp")
-end cdpCommand
+on lanesCommand()
+	return "LANES_FROM_CHOOSER=1 /bin/zsh " & quoted form of (POSIX path of (path to me) & "Contents/Resources/lanes")
+end lanesCommand
 
 on addProfile()
 	set dlg to display dialog "Profile name (e.g. personal, client-acme):" default answer "" with title "Add Claude profile"
 	set rawName to text returned of dlg
 	if rawName is "" then return
 	try
-		do shell script cdpCommand() & " add " & quoted form of rawName
+		do shell script lanesCommand() & " add " & quoted form of rawName
 	on error msg
 		display alert "Could not create profile" message msg as critical
 		return
 	end try
-	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running. (The Claude Profiles menu bar app routes it to the right profile instead.)" with title "Add Claude profile" buttons {"OK"} default button "OK"
+	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running. (The Lanes menu bar app routes it to the right profile instead.)" with title "Add Claude profile" buttons {"OK"} default button "OK"
 end addProfile
 
 on removeProfile(appSupport)
@@ -723,23 +739,23 @@ on removeProfile(appSupport)
 		set flag to "--delete-data"
 	end if
 	try
-		do shell script cdpCommand() & " remove " & quoted form of target & " " & flag
+		do shell script lanesCommand() & " remove " & quoted form of target & " " & flag
 	on error msg
 		display alert "Could not remove profile" message msg as critical
 	end try
 end removeProfile
 EOF
-  compile_launcher "$tmp/chooser.applescript" "$LAUNCHER_DIR/$CHOOSER_NAME.app" "$BUNDLE_PREFIX.chooser" "$claude_app"
+  compile_launcher "$tmp/chooser.applescript" "$LAUNCHER_DIR/$APP_NAME.app" "$BUNDLE_PREFIX.chooser" "$claude_app"
   rm -rf "$tmp"
 
   # Bundle this script so the chooser's add/remove buttons drive the exact
   # same code path as the CLI, then re-sign (the copy broke the seal again).
-  bundle_cdp "$LAUNCHER_DIR/$CHOOSER_NAME.app"
-  make_manager_icns "$claude_app" "$LAUNCHER_DIR/$CHOOSER_NAME.app/Contents/Resources/applet.icns" || true
-  /usr/bin/codesign --force --sign - "$LAUNCHER_DIR/$CHOOSER_NAME.app" 2>/dev/null || true
+  bundle_script "$LAUNCHER_DIR/$APP_NAME.app"
+  make_manager_icns "$claude_app" "$LAUNCHER_DIR/$APP_NAME.app/Contents/Resources/applet.icns" || true
+  /usr/bin/codesign --force --sign - "$LAUNCHER_DIR/$APP_NAME.app" 2>/dev/null || true
   sync_install
 
-  [[ "${1:-}" == "--quiet" ]] || ok "Chooser rebuilt: $LAUNCHER_DIR/$CHOOSER_NAME.app  (Spotlight: '$CHOOSER_NAME')"
+  [[ "${1:-}" == "--quiet" ]] || ok "Chooser rebuilt: $LAUNCHER_DIR/$APP_NAME.app  (Spotlight: '$APP_NAME')"
 }
 
 # Launches the profile from its own Claude.app clone — so the running Dock
@@ -751,8 +767,8 @@ launch_profile() {
   local raw="$1"
   local display data_dir color clone claude_app pid tool
   display=$(displayify "$(slugify "$raw")")
-  data_dir="$APP_SUPPORT/Claude-$display"
-  [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: cdp add $raw"
+  data_dir="$PROFILES_DIR/$display"
+  [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: lanes add $raw"
   color=$(color_of_profile "$data_dir")
   claude_app=$(find_claude_app)
   clone="$CLONES_DIR/Claude $display.app"
@@ -781,10 +797,10 @@ cmd_launch() {
   # chooser. Re-homes any stray clone first so a post-update relaunch can't
   # keep serving the default account under a profile's name.
   local raw="${1:-}"
-  [[ -n "$raw" ]] || err "Usage: cdp launch <name> | cdp launch --best"
+  [[ -n "$raw" ]] || err "Usage: lanes launch <name> | lanes launch --best"
   if [[ "$raw" == "--best" ]]; then
     raw=$(best_profile) ||
-      err "No usage data to choose from. Open the Claude Profiles app (menu bar) so it can load usage."
+      err "No usage data to choose from. Open the Lanes app (menu bar) so it can load usage."
     info "Most free: $raw"
     if [[ "$raw" == "Default" ]]; then
       open -a "$(find_claude_app)"
@@ -800,8 +816,8 @@ cmd_launch() {
 # saves it after every refresh: usage.json for the widget and --json, and
 # usage.tsv for the shell. These commands only read that snapshot.
 
-USAGE_TSV="$APP_SUPPORT/claude-desktop-profiles/usage.tsv"
-USAGE_JSON="$APP_SUPPORT/claude-desktop-profiles/usage.json"
+USAGE_TSV="$DATA_DIR/usage.tsv"
+USAGE_JSON="$DATA_DIR/usage.json"
 
 # Prints each profile as one tab-joined record without its header line; fields:
 # name color running 5h% 5h-reset 7d% 7d-reset error (empty = unknown).
@@ -839,7 +855,7 @@ best_profile() {
   done
   best=${best:-$fallback}
   [[ -n "$best" ]] || return 1
-  (( $(usage_age) < 3600 )) || warn "Usage data is over an hour old; is the Claude Profiles app running?"
+  (( $(usage_age) < 3600 )) || warn "Usage data is over an hour old; is the Lanes app running?"
   print -- "$best"
 }
 
@@ -861,7 +877,7 @@ fmt_reset() {
 
 cmd_usage() {
   [[ -f "$USAGE_TSV" ]] ||
-    err "No usage data yet. Open the Claude Profiles app (menu bar): it loads usage and saves it for cdp."
+    err "No usage data yet. Open the Lanes app (menu bar): it loads usage and saves it for lanes."
   if [[ "${1:-}" == "--json" ]]; then
     cat "$USAGE_JSON"
     return 0
@@ -884,14 +900,14 @@ cmd_usage() {
   local age; age=$(usage_age)
   print
   if (( age > 1800 )); then
-    warn "Updated $(( age / 60 )) min ago; is the Claude Profiles app running?"
+    warn "Updated $(( age / 60 )) min ago; is the Lanes app running?"
   else
-    info "● running · updated $(( age / 60 )) min ago by the Claude Profiles app"
+    info "● running · updated $(( age / 60 )) min ago by the Lanes app"
   fi
 }
 
 cmd_watch() {
-  # `cdp watch` loops forever (LaunchAgent); `cdp watch --once` is one pass.
+  # `lanes watch` loops forever (LaunchAgent); `lanes watch --once` is one pass.
   if [[ "${1:-}" == "--once" ]]; then
     adopt_strays
     return 0
@@ -908,7 +924,7 @@ cmd_watch() {
   done
 }
 
-# Installs/removes the LaunchAgent that runs `cdp watch`. Idempotent: rewrites
+# Installs/removes the LaunchAgent that runs `lanes watch`. Idempotent: rewrites
 # and reloads only when the plist content changed or the agent isn't loaded;
 # --restart also restarts an up-to-date agent.
 install_watchdog() {
@@ -944,7 +960,7 @@ EOF
   (( loaded )) && launchctl bootout "gui/$(id -u)/$WATCH_LABEL" 2>/dev/null
   mv "$tmp" "$WATCH_PLIST"
   launchctl bootstrap "gui/$(id -u)" "$WATCH_PLIST"
-  [[ "$quiet" == "--quiet" ]] || ok "Watchdog installed: $WATCH_PLIST (runs: cdp watch)"
+  [[ "$quiet" == "--quiet" ]] || ok "Watchdog installed: $WATCH_PLIST (runs: lanes watch)"
 }
 
 uninstall_watchdog() {
@@ -961,28 +977,28 @@ cmd_watchdog() {
       if launchctl print "gui/$(id -u)/$WATCH_LABEL" >/dev/null 2>&1; then
         ok "Watchdog loaded ($WATCH_LABEL)."
       else
-        info "Watchdog not loaded. Install with: cdp watchdog install"
+        info "Watchdog not loaded. Install with: lanes watchdog install"
       fi
       local s
       s=$(stray_pids)
       [[ -n "$s" ]] && print -- "Strays:"$'\n'"$s" || info "No stray clones."
       ;;
-    *) err "Usage: cdp watchdog [install|uninstall|status]" ;;
+    *) err "Usage: lanes watchdog [install|uninstall|status]" ;;
   esac
 }
 
 cmd_color() {
   local raw="${1:-}" color="${2:-}"
-  [[ -n "$raw" && -n "$color" ]] || err "Usage: cdp color <name> <color>   Available: ${(k)HUES}"
+  [[ -n "$raw" && -n "$color" ]] || err "Usage: lanes color <name> <color>   Available: ${(k)HUES}"
   [[ -n "${HUES[$color]+x}" ]] || err "Unknown color '$color'. Available: ${(k)HUES}"
   local display data_dir app_path claude_app
   display=$(displayify "$(slugify "$raw")")
-  data_dir="$APP_SUPPORT/Claude-$display"
+  data_dir="$PROFILES_DIR/$display"
   app_path="$LAUNCHER_DIR/Claude $display.app"
   [[ -d "$data_dir" ]] || err "Profile '$display' not found."
   claude_app=$(find_claude_app)
 
-  print -- "$color" > "$data_dir/.cdp-color"
+  print -- "$color" > "$data_dir/.lanes-color"
   ok "Color for '$display' set to $color."
 
   if [[ -f "$app_path/Contents/Resources/applet.icns" ]]; then
@@ -991,7 +1007,7 @@ cmd_color() {
     /usr/bin/touch "$app_path"
     ok "Launcher icon updated. (Finder/Dock may take a moment to refresh.)"
   else
-    info "No launcher found; run 'cdp add $raw' to create one with this color."
+    info "No launcher found; run 'lanes add $raw' to create one with this color."
   fi
 
   local clone="$CLONES_DIR/Claude $display.app"
@@ -1002,23 +1018,23 @@ cmd_color() {
 }
 
 # Builds the SwiftUI manager app at $1 from a repo checkout: the GUI, a copy
-# of this script and the prebuilt helper, ad-hoc signed. Used by `cdp gui`
+# of this script and the prebuilt helper, ad-hoc signed. Used by `lanes gui`
 # and by scripts/build.sh for the release.
 build_manager_app() {
   local bundle="$1"
   command -v swiftc >/dev/null 2>&1 ||
-    err "swiftc not found. Install Xcode Command Line Tools (xcode-select --install), or use 'cdp chooser' for the dialog-based picker."
-  local src="${SCRIPT_PATH:h:h}/app/ClaudeProfiles.swift"
+    err "swiftc not found. Install Xcode Command Line Tools (xcode-select --install), or use 'lanes chooser' for the dialog-based picker."
+  local src="${SCRIPT_PATH:h:h}/app/Lanes.swift"
   local shared="${SCRIPT_PATH:h:h}/app/Shared.swift" widget="${SCRIPT_PATH:h:h}/app/Widget.swift"
   [[ -f "$src" && -f "$shared" && -f "$widget" ]] ||
-    err "GUI source not found at ${src:h} — run cdp from a repo checkout to build the GUI."
+    err "GUI source not found at ${src:h} — run lanes from a repo checkout to build the GUI."
 
   rm -rf "$bundle"
   mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-  info "Compiling ClaudeProfiles.swift (first build can take ~30s)…"
-  swift_compile "$bundle/Contents/MacOS/ClaudeProfiles" -parse-as-library "$src" "$shared" ||
-    err "Compiling ClaudeProfiles.swift failed."
-  build_widget "$bundle/Contents/PlugIns/ClaudeProfilesWidget.appex" "$widget" "$shared" ||
+  info "Compiling Lanes.swift (first build can take ~30s)…"
+  swift_compile "$bundle/Contents/MacOS/Lanes" -parse-as-library "$src" "$shared" ||
+    err "Compiling Lanes.swift failed."
+  build_widget "$bundle/Contents/PlugIns/LanesWidget.appex" "$widget" "$shared" ||
     err "Compiling the widget failed."
   build_helper "$bundle/Contents/Resources/$HELPER_NAME.app" || err "Compiling the helper failed."
 
@@ -1027,14 +1043,14 @@ build_manager_app() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>$CHOOSER_NAME</string>
-	<key>CFBundleDisplayName</key><string>$CHOOSER_NAME</string>
-	<key>CFBundleIdentifier</key><string>$BUNDLE_PREFIX.gui</string>
-	<key>CFBundleExecutable</key><string>ClaudeProfiles</string>
+	<key>CFBundleName</key><string>$APP_NAME</string>
+	<key>CFBundleDisplayName</key><string>$APP_NAME</string>
+	<key>CFBundleIdentifier</key><string>$BUNDLE_PREFIX</string>
+	<key>CFBundleExecutable</key><string>Lanes</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>$CDP_VERSION</string>
-	<key>CFBundleVersion</key><string>$CDP_VERSION</string>
+	<key>CFBundleShortVersionString</key><string>$LANES_VERSION</string>
+	<key>CFBundleVersion</key><string>$LANES_VERSION</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
@@ -1045,8 +1061,8 @@ build_manager_app() {
 			<key>CFBundleURLSchemes</key><array><string>claude</string></array>
 		</dict>
 		<dict>
-			<key>CFBundleURLName</key><string>Claude Profiles</string>
-			<key>CFBundleURLSchemes</key><array><string>claude-profiles</string></array>
+			<key>CFBundleURLName</key><string>Lanes</string>
+			<key>CFBundleURLSchemes</key><array><string>lanes</string></array>
 		</dict>
 	</array>
 </dict>
@@ -1055,7 +1071,7 @@ EOF
 
   # Same trick as the chooser: bundle this script so the GUI's add/remove
   # drive the exact same code path as the CLI.
-  bundle_cdp "$bundle"
+  bundle_script "$bundle"
   cp "${SCRIPT_PATH:h:h}/app/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
   cp "${SCRIPT_PATH:h:h}/app/AppIcon.icns" "$bundle/Contents/Resources/$HELPER_NAME.app/Contents/Resources/AppIcon.icns"
   /usr/bin/codesign --force --sign - "$bundle/Contents/Resources/$HELPER_NAME.app"
@@ -1071,7 +1087,7 @@ build_widget() {
   # Entry point NSExtensionMain, as Xcode links extensions: it sets up the
   # XPC service and then runs the @main widget. Entering at Swift's main
   # instead skips that and ExtensionFoundation traps on launch.
-  CDP_MIN_MACOS=14.0 swift_compile "$appex/Contents/MacOS/ClaudeProfilesWidget" \
+  LANES_MIN_MACOS=14.0 swift_compile "$appex/Contents/MacOS/LanesWidget" \
     -parse-as-library -application-extension -Xlinker -e -Xlinker _NSExtensionMain \
     "$src" "$shared" || return 1
   cat > "$appex/Contents/Info.plist" <<EOF
@@ -1079,15 +1095,15 @@ build_widget() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>ClaudeProfilesWidget</string>
-	<key>CFBundleDisplayName</key><string>$CHOOSER_NAME</string>
-	<key>CFBundleIdentifier</key><string>$BUNDLE_PREFIX.gui.widget</string>
+	<key>CFBundleName</key><string>LanesWidget</string>
+	<key>CFBundleDisplayName</key><string>$APP_NAME</string>
+	<key>CFBundleIdentifier</key><string>$BUNDLE_PREFIX.widget</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
-	<key>CFBundleExecutable</key><string>ClaudeProfilesWidget</string>
+	<key>CFBundleExecutable</key><string>LanesWidget</string>
 	<key>CFBundlePackageType</key><string>XPC!</string>
-	<key>CFBundleShortVersionString</key><string>$CDP_VERSION</string>
-	<key>CFBundleVersion</key><string>$CDP_VERSION</string>
+	<key>CFBundleShortVersionString</key><string>$LANES_VERSION</string>
+	<key>CFBundleVersion</key><string>$LANES_VERSION</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSExtension</key>
 	<dict>
@@ -1104,7 +1120,7 @@ EOF
 <dict>
 	<key>com.apple.security.app-sandbox</key><true/>
 	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-	<array><string>/Library/Application Support/claude-desktop-profiles/</string></array>
+	<array><string>/Library/Application Support/Lanes/</string></array>
 </dict>
 </plist>
 EOF
@@ -1119,32 +1135,32 @@ cmd_gui() {
   # chooser at the same Spotlight name. Built locally on the user's machine,
   # so there is no notarization/quarantine problem.
   local app tmp bundle
-  app="$LAUNCHER_DIR/$CHOOSER_NAME.app"
+  app="$LAUNCHER_DIR/$APP_NAME.app"
   tmp=$(mktemp -d)
-  bundle="$tmp/$CHOOSER_NAME.app"
+  bundle="$tmp/$APP_NAME.app"
   build_manager_app "$bundle"
 
   mkdir -p "$LAUNCHER_DIR"
   # A running GUI keeps executing the replaced binary; restart it on the new one.
   local running=0
-  pkill -f "$app/Contents/MacOS/ClaudeProfiles" 2>/dev/null && running=1
+  pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null && running=1
   rm -rf "$app"
   mv "$bundle" "$app"
   rm -rf "$tmp"
   sync_install
   (( running )) && open "$app"
-  ok "GUI installed: $app  (Spotlight: '$CHOOSER_NAME')"
+  ok "GUI installed: $app  (Spotlight: '$APP_NAME')"
 }
 
 # Run by the manager app on every launch: the first time a version runs from
 # a location (a fresh download, an update), points launchers, watchdog and
-# helper at this copy of cdp.
+# helper at this copy of lanes.
 cmd_setup() {
   # An app opened straight from Downloads runs from a randomized read-only
   # copy that vanishes on quit; the watchdog would point at nothing.
   [[ "$SCRIPT_PATH" != */AppTranslocation/* ]] ||
-    err "Move Claude Profiles to your Applications folder, then open it again."
-  local stamp="$CACHE_DIR/setup" want="$CDP_VERSION $SCRIPT_PATH"
+    err "Move Lanes to your Applications folder, then open it again."
+  local stamp="$CACHE_DIR/setup" want="$LANES_VERSION $SCRIPT_PATH"
   [[ "${1:-}" == "--if-needed" && "$(cat "$stamp" 2>/dev/null)" == "$want" ]] && return 0
   sync_install
   mkdir -p "$CACHE_DIR"
@@ -1153,25 +1169,25 @@ cmd_setup() {
 
 cmd_list() {
   local d found=0
-  for d in "$APP_SUPPORT"/Claude-*(N/); do
+  for d in "$PROFILES_DIR"/*(N/); do
     found=1
-    local display="${${d:t}#Claude-}"
+    local display="${d:t}"
     local app="$LAUNCHER_DIR/Claude $display.app"
     if [[ -d "$app" ]]; then
       print -- "  $display\t$d\t(launcher ok)"
     else
-      print -- "  $display\t$d\t(launcher MISSING — run: cdp add $(slugify "$display"))"
+      print -- "  $display\t$d\t(launcher MISSING — run: lanes add $(slugify "$display"))"
     fi
   done
-  (( found )) || info "No profiles yet. Create one with: cdp add <name>"
+  (( found )) || info "No profiles yet. Create one with: lanes add <name>"
 }
 
 cmd_remove() {
   local raw="${1:-}" mode="${2:-}"
-  [[ -n "$raw" ]] || err "Usage: cdp remove <name> [--keep-data|--delete-data]"
+  [[ -n "$raw" ]] || err "Usage: lanes remove <name> [--keep-data|--delete-data]"
   local display data_dir app_path
   display=$(displayify "$(slugify "$raw")")
-  data_dir="$APP_SUPPORT/Claude-$display"
+  data_dir="$PROFILES_DIR/$display"
   app_path="$LAUNCHER_DIR/Claude $display.app"
 
   [[ -d "$app_path" ]] && { rm -rf "$app_path"; ok "Deleted launcher $app_path" }
@@ -1195,7 +1211,7 @@ cmd_remove() {
           rm -rf "$data_dir"
           ok "Deleted $data_dir"
         else
-          info "Data folder kept. Re-create the launcher later with: cdp add $raw"
+          info "Data folder kept. Re-create the launcher later with: lanes add $raw"
         fi
         ;;
     esac
@@ -1205,41 +1221,41 @@ cmd_remove() {
 
 cmd_help() {
   cat <<'EOF'
-cdp — run multiple Claude Desktop accounts side by side on macOS
+lanes — run multiple Claude Desktop accounts side by side on macOS
 
 USAGE
-  cdp add <name> [--color <c>]
+  lanes add <name> [--color <c>]
                       Create a profile + Spotlight launcher
-                      (e.g. cdp add personal --color blue)
-  cdp launch <name>   Launch a profile (or focus it if already running).
+                      (e.g. lanes add personal --color blue)
+  lanes launch <name>   Launch a profile (or focus it if already running).
                       Runs from a per-profile Claude.app clone, so the Dock
                       tile wears the profile color and owns the window, with
                       its own Claude Code config dir (CLAUDE_CONFIG_DIR)
-  cdp launch --best   Launch the profile with the most 5-hour headroom
-  cdp usage [--json]  5-hour and weekly usage per profile, with reset times
-                      (as last loaded by the Claude Profiles menu bar app)
-  cdp watchdog [install|uninstall|status]
+  lanes launch --best   Launch the profile with the most 5-hour headroom
+  lanes usage [--json]  5-hour and weekly usage per profile, with reset times
+                      (as last loaded by the Lanes menu bar app)
+  lanes watchdog [install|uninstall|status]
                       LaunchAgent that re-homes a clone relaunched without
                       its profile (Claude's self-update does that). Installed
-                      automatically by cdp add
-  cdp watch [--once]  What the watchdog runs
-  cdp color <name> <c>
+                      automatically by lanes add
+  lanes watch [--once]  What the watchdog runs
+  lanes color <name> <c>
                       Change a profile's icon color
                       (orange red yellow green teal blue purple pink)
-  cdp list            List profiles and launcher health
-  cdp remove <name>   Remove a profile's launcher; add --keep-data or
+  lanes list            List profiles and launcher health
+  lanes remove <name>   Remove a profile's launcher; add --keep-data or
                       --delete-data to skip the interactive question
-  cdp gui             Build + install the "Claude Profiles" SwiftUI app
+  lanes gui             Build + install the "Lanes" SwiftUI app
                       (needs Xcode Command Line Tools; run from repo checkout)
-  cdp chooser         Build the AppleScript picker instead — zero build
+  lanes chooser         Build the AppleScript picker instead — zero build
                       requirements, same Spotlight name, fewer looks;
                       refuses to replace the SwiftUI app without --force
-  cdp setup           Rebuild launchers, watchdog and helper from this cdp
+  lanes setup           Rebuild launchers, watchdog and helper from this lanes
                       (the app runs it when a new version first opens)
-  cdp version         Print the version
-  cdp help            This text
+  lanes version         Print the version
+  lanes help            This text
 
-Profiles live in ~/Library/Application Support/Claude-<Name>; that profile's
+Profiles live in ~/Library/Application Support/Lanes/profiles/<Name>; that profile's
 Claude Code config (Code/Cowork tab) lives in <profile>/claude-config.
 Launchers live in ~/Applications and are indexed by Spotlight.
 EOF
@@ -1259,8 +1275,8 @@ case "${1:-help}" in
   gui)     cmd_gui ;;
   chooser) shift; cmd_chooser "$@" ;;
   setup)   shift; cmd_setup "$@" ;;
-  build)   shift; build_manager_app "${1:?Usage: cdp build <out.app>}" ;;
-  version|--version) print -- "$CDP_VERSION" ;;
+  build)   shift; build_manager_app "${1:?Usage: lanes build <out.app>}" ;;
+  version|--version) print -- "$LANES_VERSION" ;;
   help|-h|--help) cmd_help ;;
-  *) err "Unknown command: $1 (try: cdp help)" ;;
+  *) err "Unknown command: $1 (try: lanes help)" ;;
 esac

@@ -1,51 +1,54 @@
-<h1><img src="docs/images/icon.png" width="40" align="top" alt=""> Claude Profiles</h1>
+<h1><img src="docs/images/icon.png" width="40" align="top" alt=""> Lanes for Claude</h1>
 
-Run several Claude Desktop accounts side by side on your Mac: work and personal,
-or one per client. Each profile has its own login, chats, settings and color, and
-its own launcher in Spotlight and the Dock.
+Run several Claude Desktop accounts side by side on your Mac, each in its own
+lane: work and personal, or one per client. Each profile has its own login,
+chats, settings and color, and its own launcher in Spotlight and the Dock. A menu
+bar app and a desktop widget show how much of each account's limits you've used.
 
-![Claude Profiles window](docs/screenshot.png)
+*Lanes is an independent project, not affiliated with or endorsed by Anthropic.*
+
+![Lanes window](docs/screenshot.png)
 
 ## Install
 
-**1. Download.** Get **Claude-Profiles.zip** from the [latest release](../../releases/latest).
+**1. Download.** Get **Lanes.zip** from the [latest release](../../releases/latest).
 
-**2. Move to Applications.** Double-click the zip, then drag **Claude Profiles.app**
+**2. Move to Applications.** Double-click the zip, then drag **Lanes.app**
 into your **Applications** folder.
 
-**3. Open it the first time.** Claude Profiles isn't from the App Store, so macOS
+**3. Open it the first time.** Lanes isn't from the App Store, so macOS
 stops the first launch with this message. Click **Done**.
 
-<img src="docs/images/gatekeeper-blocked.png" width="260" alt="macOS dialog: “Claude Profiles” Not Opened">
+<img src="docs/images/gatekeeper-blocked.png" width="260" alt="macOS dialog: “Lanes” Not Opened">
 
 Then open **System Settings → Privacy & Security**, scroll down to **Security**,
-and click **Open Anyway** next to the Claude Profiles message.
+and click **Open Anyway** next to the Lanes message.
 
 <img src="docs/images/open-anyway.png" width="484" alt="Privacy & Security settings with the Open Anyway button">
 
 macOS asks one last time. Click **Open Anyway** again and confirm with your
 password or Touch ID.
 
-<img src="docs/images/open-anyway-confirm.png" width="300" alt="macOS dialog: Open “Claude Profiles”? with the Open Anyway button">
+<img src="docs/images/open-anyway-confirm.png" width="300" alt="macOS dialog: Open “Lanes”? with the Open Anyway button">
 
 You do this once per version; from then on it opens like any other app.
 
 > **Prefer the Terminal?** This does the same as step 3:
 > ```sh
-> xattr -dr com.apple.quarantine "/Applications/Claude Profiles.app"
+> xattr -dr com.apple.quarantine "/Applications/Lanes.app"
 > ```
 
 **4. Create a profile.** Click **New Profile**, give it a name and a color. It
 shows up in Spotlight as "Claude <Name>".
 
 **5. Sign in.** Open the profile and log in. Claude's login hands the auth
-token back over a `claude://` link; Claude Profiles catches that link and sends
+token back over a `claude://` link; Lanes catches that link and sends
 it to the right profile — the one running, or, with several running, the one you
 pick (the window you clicked "Log in" in is preselected). All profiles can stay
 open while you do it.
 
 > Turned off "Send claude:// links to the right profile" in the gear menu, or
-> Claude Profiles isn't running? Then macOS sends the link to **whichever Claude
+> Lanes isn't running? Then macOS sends the link to **whichever Claude
 > is running**: quit every other Claude window (⌘Q) before a profile's first
 > sign-in. If the token ever lands on the wrong instance, no data is lost: sign
 > that instance back into its own account.
@@ -59,8 +62,8 @@ open while you do it.
 
 Download the new zip and replace the app in Applications. On its first launch it
 updates your launchers and the watchdog to the new version. Coming from a source
-install (`./install.sh`)? Delete `~/Applications/Claude Profiles.app`, so
-Spotlight shows one copy. Profiles, launchers and colors are kept.
+install (`./install.sh`)? Delete `~/Applications/Lanes.app`, so Spotlight shows
+one copy. Profiles, launchers and colors are kept.
 
 ## What it does
 
@@ -77,20 +80,20 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
   the most headroom is flagged. Click a profile to launch or focus it; right-click
   to change its color, reveal its data or remove it. The icon turns orange or red
   near a limit. The gear menu has usage alerts, launch at login, the global
-  shortcuts and the refresh interval. Opening Claude Profiles again from
-  Spotlight pops the panel; the window (New Profile…, Open Claude Profiles) is
+  shortcuts and the refresh interval. Opening Lanes again from
+  Spotlight pops the panel; the window (New Profile…, Open Lanes) is
   only used to add and remove profiles.
 - **Open the most free profile**: ⌥⌘B (or "Open Most Free" in the panel, or
-  `cdp launch --best`) launches or focuses the profile with the most 5-hour
+  `lanes launch --best`) launches or focuses the profile with the most 5-hour
   headroom. A profile whose weekly limit is used up is skipped unless all are.
 - **Usage alerts**: at 80% and 95% of the 5-hour limit, and, once a 5-hour or
   weekly limit passes 80%, a notification at the exact minute it resets
   ("Work: 5-hour limit reset"). The reset alert is scheduled with macOS, so it
-  arrives even if Claude Profiles has quit by then.
+  arrives even if Lanes has quit by then.
 - **A desktop widget** (macOS 14+): small, medium or large, with each profile's
   5-hour and weekly bars and live reset countdowns. Click a profile in the
   medium or large size to open it. Add it from the desktop's Edit Widgets… menu
-  and search "Claude Profiles".
+  and search "Lanes".
 - **`claude://` links go to the right profile**: sign-in tokens and "open in
   the desktop app" links. With one Claude running it gets the link; with
   several (or none) a picker asks, preselecting the window you used last. A
@@ -98,7 +101,7 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
   account. Claude re-registers itself as the link handler each time it starts,
   so the menu bar app takes it back within a couple of seconds; turn it off in
   the gear menu to hand links back to Claude.
-- **A CLI (`cdp`)** for scripting, shipped inside the app.
+- **A CLI (`lanes`)** for scripting, shipped inside the app.
 
 ![Colored Dock tiles for running profiles](docs/dock.png)
 
@@ -106,40 +109,40 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
 
 ## Command line
 
-The `cdp` CLI ships inside the app. To put it on your PATH:
+The `lanes` CLI ships inside the app. To put it on your PATH:
 
 ```sh
 sudo mkdir -p /usr/local/bin
-sudo ln -sf "/Applications/Claude Profiles.app/Contents/Resources/cdp" /usr/local/bin/cdp
+sudo ln -sf "/Applications/Lanes.app/Contents/Resources/lanes" /usr/local/bin/lanes
 ```
 
 ```sh
-cdp add personal --color blue   # create profile + Spotlight launcher
-cdp launch personal             # launch, or focus if already running
-cdp color personal teal         # change the profile's color
-cdp list                        # profiles and launcher health
-cdp usage                       # 5-hour and weekly usage per profile, with resets
-cdp usage --json                # the same, for scripts and status lines
-cdp launch --best               # open the profile with the most 5-hour headroom
-cdp watchdog status             # LaunchAgent state + clones running off-profile
-cdp remove personal             # remove launcher; asks before touching data
-cdp setup                       # point launchers + watchdog at this cdp
-cdp version
+lanes add personal --color blue   # create profile + Spotlight launcher
+lanes launch personal             # launch, or focus if already running
+lanes color personal teal         # change the profile's color
+lanes list                        # profiles and launcher health
+lanes usage                       # 5-hour and weekly usage per profile, with resets
+lanes usage --json                # the same, for scripts and status lines
+lanes launch --best               # open the profile with the most 5-hour headroom
+lanes watchdog status             # LaunchAgent state + clones running off-profile
+lanes remove personal             # remove launcher; asks before touching data
+lanes setup                       # point launchers + watchdog at this copy
+lanes version
 ```
 
-The window, the launchers and the CLI all run the same `cdp` script.
+The window, the launchers and the CLI all run the same `lanes` script.
 
 ## Data and privacy
 
 - No telemetry. The only network calls are the menu bar's usage checks to
   claude.ai, made with each profile's own session (read from its cookie jar,
-  never stored or sent elsewhere). About 3,200 lines of shell and Swift you can
+  never stored or sent elsewhere). About 3,400 lines of shell and Swift you can
   read in one sitting.
 - Usage numbers are saved locally for the widget, the CLI and the sparklines:
-  `~/Library/Application Support/claude-desktop-profiles/usage.json`,
+  `~/Library/Application Support/Lanes/usage.json`,
   `usage.tsv` and `usage-history.json` (a week of readings, one per ~10 minutes).
   They hold percentages and reset times only, no cookies or account details.
-- A profile is a folder: `~/Library/Application Support/Claude-<Name>`. Its
+- A profile is a folder: `~/Library/Application Support/Lanes/profiles/<Name>`. Its
   Claude Code config lives in `<profile>/claude-config`.
 - Your default Claude install is never touched. Profiles start empty and never
   copy credentials; each signs in on its own.
@@ -151,18 +154,18 @@ honors Chromium's `--user-data-dir` flag: point it at a different folder and you
 get a **fully isolated instance**. This project wraps that one flag in a native
 macOS experience.
 
-- A profile **is** a folder: `~/Library/Application Support/Claude-<Name>`.
+- A profile **is** a folder: `~/Library/Application Support/Lanes/profiles/<Name>`.
   There is no registry, database, or state file — the GUI, the chooser, and
   the CLI all discover profiles from the filesystem at runtime. The color
-  lives in `<folder>/.cdp-color`, so it travels with the profile.
-- **Launching** (`cdp launch`, which everything routes through): each
+  lives in `<folder>/.lanes-color`, so it travels with the profile.
+- **Launching** (`lanes launch`, which everything routes through): each
   profile runs from its own clone of Claude.app, created with `cp -c` —
   an APFS copy-on-write clone, ~0.5 s and near-zero disk. The clone gets a
   hue-tinted **Finder custom icon** (`NSWorkspace.setIcon`): unlike editing
   the bundle's `.icns`, Finder icons are metadata outside the code seal, so
   `codesign --verify` still passes and Keychain keeps releasing "Claude
   Safe Storage" — logins survive. Clones live outside Spotlight's index
-  (`~/Library/Application Support/claude-desktop-profiles/apps`) so they
+  (`~/Library/Application Support/Lanes/apps`) so they
   can't be launched without their `--user-data-dir`. The clone is exec'd
   directly (not via `open`) with a scrubbed, launchd-like environment plus
   `CLAUDE_CONFIG_DIR=<profile>/claude-config`: `--user-data-dir` scopes only
@@ -174,14 +177,14 @@ macOS experience.
   Squirrel's ShipIt by bundle URL — no argv, no env — so the app comes back
   on the *default* userData: default account, orange Dock icon, but still
   titled "Claude <Profile>". Clicking a Dock/Recents entry does the same.
-  `cdp add` installs a LaunchAgent (`cdp watch`, every 3 s) that quits any
+  `lanes add` installs a LaunchAgent (`lanes watch`, every 3 s) that quits any
   clone process running without `--user-data-dir` and relaunches it as its
-  profile; `cdp launch` does the same pass first. `cdp watchdog status`
+  profile; `lanes launch` does the same pass first. `lanes watchdog status`
   shows both.
 - **Staying fresh (self-update, never downgrade)**: each profile updates
   itself — Squirrel installs into the profile's *own* clone bundle, so a
   profile stays current on its own schedule, independent of the default. On
-  launch `cdp` only ever moves a clone **forward**: it re-clones when the
+  launch `lanes` only ever moves a clone **forward**: it re-clones when the
   clone is missing or older than `/Applications`, leaves a clone that has
   self-updated ahead untouched (re-cloning from an older original would
   revert the update and trap the app re-downloading it forever), and, once
@@ -195,16 +198,16 @@ macOS experience.
   path, though every clone shares Claude's bundle id. It is only ever sent to
   a clone that is already running isolated — opening a link with a stopped
   clone would start it bare, on the default account — so a stopped profile is
-  started through `cdp launch` first. Link contents are never logged or shown
+  started through `lanes launch` first. Link contents are never logged or shown
   (the sign-in token is in the query).
 - **Usage snapshot**: only the menu bar app talks to claude.ai (it holds the
   cookie decryption). After each refresh it writes `usage.json` and
-  `usage.tsv` and calls `WidgetCenter.reloadAllTimelines()`; `cdp usage`,
-  `cdp launch --best` and the widget just read those files, so they cost no
+  `usage.tsv` and calls `WidgetCenter.reloadAllTimelines()`; `lanes usage`,
+  `lanes launch --best` and the widget just read those files, so they cost no
   network calls and need no Keychain access. The widget is a sandboxed WidgetKit
   extension in `Contents/PlugIns`, ad-hoc signed like the app, whose only file
   access is a read-only sandbox exception for that one folder.
-- **Focusing**: if the profile is already running, `cdp launch` activates
+- **Focusing**: if the profile is already running, `lanes launch` activates
   its PID via `NSRunningApplication` instead of re-launching — Claude's
   second-instance handler would otherwise open a new window per click.
 - Launchers are `osacompile` applets with unique `CFBundleIdentifier`s
@@ -234,7 +237,7 @@ into accounts you own. Nothing is patched, injected, or intercepted.
 
 **Do the clones eat disk?** A fresh clone is ~free (APFS block-sharing). A
 clone goes to a full copy (~750 MB) once it **self-updates** — Squirrel
-rewrites the bundle and divergence breaks the sharing. `cdp` reclaims it: as
+rewrites the bundle and divergence breaks the sharing. `lanes` reclaims it: as
 soon as your default Claude reaches the same version, the next launch
 re-clones the profile, re-establishing shared blocks. So diverged copies are
 temporary — they collapse back once the default catches up.
@@ -246,15 +249,15 @@ other. If a profile shows "Update available", just let it restart like
 normal.
 
 Earlier versions of this tool got this wrong: the clone *did* self-update,
-but on the next launch `cdp` re-cloned from the (possibly older) default and
+but on the next launch `lanes` re-cloned from the (possibly older) default and
 silently reverted it — so the app re-downloaded the same update every launch
-and never settled. Fixed: `cdp` now compares versions in order and never
+and never settled. Fixed: `lanes` now compares versions in order and never
 downgrades a clone (see "Staying fresh" above).
 
 **What if Claude updates mid-session?** The update's relaunch lands on the
 default userData (see "Re-homing strays" above); the watchdog quits that
 instance within seconds and relaunches the profile properly, which also
-restores the color the update wiped from the clone (`cdp` re-applies the
+restores the color the update wiped from the clone (`lanes` re-applies the
 Finder icon without touching the newer bundle).
 
 **Without Xcode Command Line Tools?** The downloaded app doesn't need them:
@@ -267,19 +270,19 @@ stay orange.
 Needs the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
-git clone https://github.com/odahcam/claude-desktop-profiles.git
-cd claude-desktop-profiles
+git clone https://github.com/pego/lanes.git
+cd lanes
 ./install.sh
 ```
 
 The installer compiles the app into `~/Applications` (it falls back to the
-AppleScript picker without a Swift toolchain) and links `cdp` onto your PATH.
-`cdp gui` rebuilds the app, `cdp chooser` builds the AppleScript picker instead.
+AppleScript picker without a Swift toolchain) and links `lanes` onto your PATH.
+`lanes gui` rebuilds the app, `lanes chooser` builds the AppleScript picker instead.
 
 ## Tests
 
 ```sh
-scripts/build.sh   # build/Claude Profiles.app and build/Claude-Profiles.zip (universal)
+scripts/build.sh   # build/Lanes.app and build/Lanes.zip (universal)
 scripts/test.sh    # builds, checks the bundle, then runs the first-launch setup
                    # of a quarantined copy in a throwaway HOME
 ```
@@ -288,8 +291,10 @@ The tests never touch your real `~/Applications`, profiles or watchdog.
 
 ## Acknowledgments
 
-Not a fork of anything — all code here is original — but the underlying
-recipe is community knowledge, and [claude-multiprofile](https://github.com/jmdarre-v/claude-multiprofile)
+Lanes builds on earlier work by [odahcam](https://github.com/odahcam), who wrote
+the profile isolation, clones, launchers and watchdog at its core. The
+underlying recipe is community knowledge, and
+[claude-multiprofile](https://github.com/jmdarre-v/claude-multiprofile)
 deserves credit as prior art that proved the approach solid.
 
 ## License

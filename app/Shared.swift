@@ -1,10 +1,10 @@
-// Shared by the Claude Profiles app and its widget extension (compiled into
+// Shared by the Lanes app and its widget extension (compiled into
 // both): the color palette and the usage snapshot the app publishes for the
-// widget and for `cdp usage`.
+// widget and for `lanes usage`.
 
 import SwiftUI
 
-// Mirrors the HUES palette in bin/cdp — names must stay in sync.
+// Mirrors the HUES palette in bin/lanes — names must stay in sync.
 struct ProfileColor: Identifiable, Hashable {
     let name: String
     let hue: Double        // degrees of hue rotation applied to Claude's icon
@@ -37,7 +37,7 @@ func usageColor(_ value: Double?, tint: Color) -> Color {
 }
 
 // Written by the app after every usage refresh; read by the widget (sandboxed,
-// with a read-only exception for this folder) and by `cdp usage --json`.
+// with a read-only exception for this folder) and by `lanes usage --json`.
 struct UsageSnapshot: Codable {
     struct Entry: Codable, Identifiable {
         var name: String
@@ -56,7 +56,7 @@ struct UsageSnapshot: Codable {
     // The real home, not the sandbox container NSHomeDirectory() returns in the widget.
     static var directory: String {
         let home = getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
-        return home + "/Library/Application Support/claude-desktop-profiles"
+        return home + "/Library/Application Support/Lanes"
     }
     static var path: String { directory + "/usage.json" }
 

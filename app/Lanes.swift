@@ -1,9 +1,10 @@
-// Claude Profiles — a SwiftUI window for managing Claude Desktop profiles.
+// Lanes for Claude — a menu bar app for running several Claude Desktop
+// accounts side by side.
 //
 // This app is a frontend only: profile creation and removal shell out to the
-// copy of `cdp` bundled in Resources, so the CLI, the AppleScript chooser,
+// copy of `lanes` bundled in Resources, so the CLI, the AppleScript chooser,
 // and this app share one implementation. Profiles are discovered from the
-// filesystem (~/Library/Application Support/Claude-<Name>) on every refresh;
+// filesystem (~/Library/Application Support/Lanes/profiles/<Name>) on every refresh;
 // there is no registry to sync. Running instances are detected by reading
 // each Claude process's --user-data-dir argument out of `ps`, because all
 // instances share one binary and differ only in that flag.
@@ -35,7 +36,7 @@ func bundleVersion(_ appPath: String) -> String? {
 }
 
 // True when `a` is strictly older than `b` (ordered dotted-numeric compare).
-// Mirrors version_lt in bin/cdp — a plain != would wrongly flag a profile
+// Mirrors version_lt in bin/lanes — a plain != would wrongly flag a profile
 // that self-updated AHEAD of the default as "behind".
 func versionLessThan(_ a: String, _ b: String) -> Bool {
     if a == b { return false }
@@ -70,7 +71,7 @@ func runTool(_ tool: String, _ args: [String], env: [String: String] = [:]) thro
     let out = String(data: outData, encoding: .utf8) ?? ""
     let errText = String(data: errData, encoding: .utf8) ?? ""
     if p.terminationStatus != 0 {
-        throw NSError(domain: "cdp", code: Int(p.terminationStatus),
+        throw NSError(domain: "lanes", code: Int(p.terminationStatus),
                       userInfo: [NSLocalizedDescriptionKey: errText.isEmpty ? out : errText])
     }
     return out
@@ -157,7 +158,7 @@ private func claudeCookieHeader(dataDir: String) throws -> String {
     guard let src = [dataDir + "/Network/Cookies", dataDir + "/Cookies"].first(where: fm.fileExists)
     else { throw usageError("not signed in") }
     // Copy first: Claude keeps the live database locked while it runs.
-    let tmp = NSTemporaryDirectory() + "cdp-cookies-\(UUID().uuidString)"
+    let tmp = NSTemporaryDirectory() + "lanes-cookies-\(UUID().uuidString)"
     defer { for e in ["", "-wal", "-journal"] { try? fm.removeItem(atPath: tmp + e) } }
     for e in ["", "-wal", "-journal"] where fm.fileExists(atPath: src + e) { try fm.copyItem(atPath: src + e, toPath: tmp + e) }
     let rows = try runTool("/usr/bin/sqlite3", [tmp, "SELECT name || '|' || hex(encrypted_value) FROM cookies WHERE host_key LIKE '%claude.ai'"])
@@ -225,9 +226,9 @@ func fetchUsage(dataDir: String) async throws -> Usage {
 }
 
 // When no organization reports usage, keep the raw replies (no cookies) so the
-// cause can be inspected: ~/Library/Logs/Claude Profiles/usage-debug.json
+// cause can be inspected: ~/Library/Logs/Lanes/usage-debug.json
 private func writeUsageDebug(dataDir: String, raw: [[String: Any]]) {
-    let dir = NSHomeDirectory() + "/Library/Logs/Claude Profiles"
+    let dir = NSHomeDirectory() + "/Library/Logs/Lanes"
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     let payload: [String: Any] = ["dataDir": dataDir, "date": ISO8601DateFormatter().string(from: Date()), "orgs": raw]
     if let d = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
@@ -480,8 +481,8 @@ final class ProfileStore: ObservableObject {
 
     // MARK: Usage snapshot, history, best profile
 
-    // Writes usage.json (widget, `cdp usage --json`) and usage.tsv (`cdp usage`,
-    // `cdp launch --best`), records history, and asks WidgetKit to redraw.
+    // Writes usage.json (widget, `lanes usage --json`) and usage.tsv (`lanes usage`,
+    // `lanes launch --best`), records history, and asks WidgetKit to redraw.
     func publishUsage() {
         let now = Date()
         let entries = profiles.map { p -> UsageSnapshot.Entry in
@@ -533,26 +534,26 @@ final class ProfileStore: ObservableObject {
             launch(p)
         } else {
             NSSound.beep()
-            Notifier.shared.post(title: "No usage data yet", body: "Claude Profiles can't tell which profile is most free until usage loads.")
+            Notifier.shared.post(title: "No usage data yet", body: "Lanes can't tell which profile is most free until usage loads.")
         }
     }
 
     private let appSupport = NSHomeDirectory() + "/Library/Application Support"
-    private let clonesDir = NSHomeDirectory() + "/Library/Application Support/claude-desktop-profiles/apps"
-    private var cdpPath: String? { Bundle.main.path(forResource: "cdp", ofType: nil) }
+    private let clonesDir = UsageSnapshot.directory + "/apps"
+    private let profilesDir = UsageSnapshot.directory + "/profiles"
+    private var scriptPath: String? { Bundle.main.path(forResource: "lanes", ofType: nil) }
 
     func refresh() {
         var list = [Profile(name: "Default", dataDir: nil, colorName: "orange")]
         let fm = FileManager.default
-        if let entries = try? fm.contentsOfDirectory(atPath: appSupport) {
-            for entry in entries.sorted() where entry.hasPrefix("Claude-") {
+        if let entries = try? fm.contentsOfDirectory(atPath: profilesDir) {
+            for entry in entries.sorted() where !entry.hasPrefix(".") {
                 var isDir: ObjCBool = false
-                let full = appSupport + "/" + entry
+                let full = profilesDir + "/" + entry
                 if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
-                    let color = (try? String(contentsOfFile: full + "/.cdp-color", encoding: .utf8))?
+                    let color = (try? String(contentsOfFile: full + "/.lanes-color", encoding: .utf8))?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? "orange"
-                    list.append(Profile(name: String(entry.dropFirst("Claude-".count)),
-                                        dataDir: full, colorName: color))
+                    list.append(Profile(name: entry, dataDir: full, colorName: color))
                 }
             }
         }
@@ -575,8 +576,9 @@ final class ProfileStore: ObservableObject {
                   !line.contains("Helper") else { continue }
             if let r = line.range(of: "--user-data-dir=") {
                 let rest = String(line[r.upperBound...])
+                // The whole path, not a prefix: "Work" must not match "Workshop".
                 for p in profiles {
-                    if let d = p.dataDir, rest.hasPrefix(d) { found.insert(p.id) }
+                    if let d = p.dataDir, rest == d || rest.hasPrefix(d + " ") { found.insert(p.id) }
                 }
             } else if line.contains("Claude.app/Contents/MacOS/Claude") {
                 found.insert("Default")
@@ -610,7 +612,7 @@ final class ProfileStore: ObservableObject {
             do { try runTool("/usr/bin/open", ["-a", claudeAppPath]) }
             catch { errorMessage = error.localizedDescription }
         } else {
-            // cdp launch runs the profile from its own Claude.app clone (the
+            // lanes launch runs the profile from its own Claude.app clone (the
             // Dock tile wears the profile color and owns the window) or
             // focuses the running instance without spawning a new window.
             callCdp(["launch", p.name])
@@ -631,12 +633,12 @@ final class ProfileStore: ObservableObject {
     }
 
     // A new version's first launch points launchers, watchdog and helper at
-    // this app's cdp. Off the main thread: rebuilding launchers takes seconds.
+    // this app's lanes. Off the main thread: rebuilding launchers takes seconds.
     func setUp() {
-        guard let cdp = cdpPath else { return }
+        guard let lanes = scriptPath else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             var failure: String?
-            do { try runTool("/bin/zsh", [cdp, "setup", "--if-needed"], env: ["CDP_FROM_CHOOSER": "1"]) }
+            do { try runTool("/bin/zsh", [lanes, "setup", "--if-needed"], env: ["LANES_FROM_CHOOSER": "1"]) }
             catch { failure = error.localizedDescription }
             DispatchQueue.main.async {
                 if let failure { self.errorMessage = failure }
@@ -646,14 +648,14 @@ final class ProfileStore: ObservableObject {
     }
 
     private func callCdp(_ args: [String]) {
-        guard let cdp = cdpPath else {
-            errorMessage = "Bundled cdp script is missing from the app. Rebuild with: cdp gui"
+        guard let lanes = scriptPath else {
+            errorMessage = "Bundled lanes script is missing from the app. Rebuild with: lanes gui"
             return
         }
         do {
-            // CDP_FROM_CHOOSER stops cdp from rebuilding the app bundle
+            // LANES_FROM_CHOOSER stops lanes from rebuilding the app bundle
             // that is currently running us.
-            try runTool("/bin/zsh", [cdp] + args, env: ["CDP_FROM_CHOOSER": "1"])
+            try runTool("/bin/zsh", [lanes] + args, env: ["LANES_FROM_CHOOSER": "1"])
         } catch { errorMessage = error.localizedDescription }
         refresh()
     }
@@ -787,12 +789,12 @@ final class ProfileStore: ObservableObject {
         }
         // Never open a link with a clone that isn't running: LaunchServices
         // would start it without --user-data-dir, on the DEFAULT account. Start
-        // it isolated through cdp, then forward once both ps (the flag) and
+        // it isolated through lanes, then forward once both ps (the flag) and
         // LaunchServices (the bundle) see it, so the link can't spawn a copy.
-        guard let cdp = cdpPath else { linkFailed("The bundled cdp script is missing from the app."); return }
+        guard let lanes = scriptPath else { linkFailed("The bundled lanes script is missing from the app."); return }
         DispatchQueue.global(qos: .userInitiated).async {
             var failure: String?
-            do { try runTool("/bin/zsh", [cdp, "launch", p.name], env: ["CDP_FROM_CHOOSER": "1"]) }
+            do { try runTool("/bin/zsh", [lanes, "launch", p.name], env: ["LANES_FROM_CHOOSER": "1"]) }
             catch { failure = error.localizedDescription }
             DispatchQueue.main.async {
                 if let failure { self.linkFailed(failure); return }
@@ -852,8 +854,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
               let url = URL(string: s) else { return }
-        // claude-profiles:// comes from the widget: launch?profile=<name>, or open.
-        if url.scheme?.lowercased() == "claude-profiles" {
+        // lanes:// comes from the widget: launch?profile=<name>, or open.
+        if url.scheme?.lowercased() == "lanes" {
             DispatchQueue.main.async {
                 let store = ProfileStore.shared
                 let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?
@@ -878,13 +880,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct ClaudeProfilesApp: App {
+struct LanesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = ProfileStore.shared
 
     var body: some Scene {
         // Window (not WindowGroup): openWindow from the menu bar must reuse it.
-        Window("Claude Profiles", id: "main") {
+        Window("Lanes", id: "main") {
             ContentView(store: store)
         }
         .windowResizability(.contentSize)
@@ -987,7 +989,7 @@ struct MenuContent: View {
                     store.showAdd = true
                     showWindow()
                 }
-                MenuAction(title: "Open Claude Profiles", symbol: "macwindow") { showWindow() }
+                MenuAction(title: "Open Lanes", symbol: "macwindow") { showWindow() }
                 MenuAction(title: "Quit", symbol: "power") { NSApp.terminate(nil) }
             }
             .padding(.horizontal, 6)
@@ -1003,7 +1005,7 @@ struct MenuContent: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("Claude Profiles").font(.headline)
+                Text("Lanes").font(.headline)
                 if let t = store.lastUsageUpdate {
                     Text("Updated \(Text(t, style: .relative)) ago")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -1319,7 +1321,7 @@ struct ContentView: View {
         Self.launchHandled = true
         guard !store.showAdd, store.removeRequest == nil else { return }
         DispatchQueue.main.async {
-            NSApp.windows.first { $0.title == "Claude Profiles" }?.close()
+            NSApp.windows.first { $0.title == "Lanes" }?.close()
         }
     }
 
@@ -1403,7 +1405,7 @@ struct ContentView: View {
                 .resizable()
                 .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Claude Profiles").font(.title2.bold())
+                Text("Lanes").font(.title2.bold())
                 Text("Isolated Claude Desktop accounts, side by side")
                     .font(.caption)
                     .foregroundStyle(.secondary)

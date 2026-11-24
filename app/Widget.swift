@@ -1,4 +1,4 @@
-// Claude Profiles widget: per-profile usage bars on the desktop or in
+// Lanes widget: per-profile usage bars on the desktop or in
 // Notification Center. Draws the snapshot the menu bar app writes after each
 // refresh (UsageSnapshot in Shared.swift); it never talks to claude.ai or
 // reads cookies itself. The app asks WidgetKit to reload after every write;
@@ -34,11 +34,11 @@ extension UsageSnapshot {
     ])
 }
 
-// claude-profiles://launch?profile=<name> launches or focuses that profile;
-// claude-profiles://open pops the menu bar panel. Handled by the app.
+// lanes://launch?profile=<name> launches or focuses that profile;
+// lanes://open pops the menu bar panel. Handled by the app.
 func launchURL(_ name: String) -> URL {
     var c = URLComponents()
-    c.scheme = "claude-profiles"
+    c.scheme = "lanes"
     c.host = "launch"
     c.queryItems = [URLQueryItem(name: "profile", value: name)]
     return c.url!
@@ -63,13 +63,13 @@ struct UsageWidgetView: View {
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "gauge.with.needle").font(.title2).foregroundStyle(.secondary)
-                    Text("Open Claude Profiles to load usage.")
+                    Text("Open Lanes to load usage.")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)
-        .widgetURL(URL(string: "claude-profiles://open"))
+        .widgetURL(URL(string: "lanes://open"))
     }
 
     private func content(_ snap: UsageSnapshot) -> some View {
@@ -188,9 +188,9 @@ private struct WideRow: View {
 }
 
 @main
-struct ClaudeProfilesWidget: Widget {
+struct LanesWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "ClaudeProfilesUsage", provider: UsageProvider()) { entry in
+        StaticConfiguration(kind: "LanesUsage", provider: UsageProvider()) { entry in
             UsageWidgetView(entry: entry)
         }
         .configurationDisplayName("Claude Usage")

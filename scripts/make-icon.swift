@@ -9,7 +9,7 @@ let iconset = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponen
 try? FileManager.default.removeItem(at: iconset)
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 
-// Same swatches as ProfileColor in app/ClaudeProfiles.swift.
+// Same swatches as ProfileColor in app/Shared.swift.
 let orange = NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
 let blue   = NSColor(red: 0.33, green: 0.56, blue: 0.83, alpha: 1)
 let green  = NSColor(red: 0.36, green: 0.69, blue: 0.42, alpha: 1)
