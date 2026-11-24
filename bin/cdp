@@ -928,6 +928,7 @@ build_manager_app() {
 	<key>CFBundleShortVersionString</key><string>$CDP_VERSION</string>
 	<key>CFBundleVersion</key><string>$CDP_VERSION</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

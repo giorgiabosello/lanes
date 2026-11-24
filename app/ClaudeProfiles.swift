@@ -12,6 +12,9 @@ import SwiftUI
 import AppKit
 import Combine
 import CommonCrypto
+import UserNotifications
+import ServiceManagement
+import Carbon.HIToolbox
 
 // MARK: - Shared helpers
 
@@ -81,12 +84,34 @@ func runTool(_ tool: String, _ args: [String], env: [String: String] = [:]) thro
 struct Usage: Equatable {
     var fiveHour: Double?   // percent of the 5-hour limit used
     var sevenDay: Double?   // percent of the weekly limit used
+    var fiveHourReset: Date?
+    var sevenDayReset: Date?
     var error: String?
-    var summary: String {
-        if let error { return error }
-        func pct(_ v: Double?) -> String { v.map { "\(Int($0.rounded()))%" } ?? "—" }
-        return "5h \(pct(fiveHour)) · 7d \(pct(sevenDay))"
+
+    var needsSignIn: Bool { error == "not signed in" || error == "session expired" }
+    var hasNoData: Bool { error == nil && fiveHour == nil && sevenDay == nil }
+}
+
+// "resets in 2h 10m" within a day, "resets Mon 09:30" beyond that.
+func resetText(_ date: Date?) -> String? {
+    guard let date else { return nil }
+    let secs = date.timeIntervalSinceNow
+    guard secs > 0 else { return nil }
+    if secs < 3600 { return "resets in \(max(1, Int((secs / 60).rounded(.up)))) min" }
+    if secs < 24 * 3600 {
+        let h = Int(secs) / 3600, m = (Int(secs) % 3600) / 60
+        return m == 0 ? "resets in \(h)h" : "resets in \(h)h \(m)m"
     }
+    let f = DateFormatter()
+    f.dateFormat = "EEE HH:mm"
+    return "resets " + f.string(from: date)
+}
+
+private func parseISODate(_ v: Any?) -> Date? {
+    guard let str = v as? String else { return nil }
+    let frac = ISO8601DateFormatter()
+    frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return frac.date(from: str) ?? ISO8601DateFormatter().date(from: str)
 }
 
 private func chromiumKey() throws -> Data {
@@ -178,7 +203,72 @@ func fetchUsage(dataDir: String) async throws -> Usage {
     guard let j = try await get("/organizations/\(org)/usage") as? [String: Any]
     else { throw usageError("unexpected response") }
     func pct(_ k: String) -> Double? { (j[k] as? [String: Any])?["utilization"] as? Double }
-    return Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"), error: nil)
+    func reset(_ k: String) -> Date? { parseISODate((j[k] as? [String: Any])?["resets_at"]) }
+    return Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"),
+                 fiveHourReset: reset("five_hour"), sevenDayReset: reset("seven_day"), error: nil)
+}
+
+// MARK: - System integrations
+
+// Shows banners even while the app is frontmost (the default is to suppress them).
+final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = Notifier()
+    func setUp() {
+        let c = UNUserNotificationCenter.current()
+        c.delegate = self
+        c.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+    func post(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .sound])
+    }
+}
+
+// Global shortcut (⌥⌘P) that opens the menu bar panel.
+enum GlobalShortcut {
+    private static var ref: EventHotKeyRef?
+    private static var handlerInstalled = false
+
+    static func setEnabled(_ on: Bool) {
+        if on {
+            if !handlerInstalled {
+                var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+                InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+                    DispatchQueue.main.async { GlobalShortcut.togglePanel() }
+                    return noErr
+                }, 1, &spec, nil, nil)
+                handlerInstalled = true
+            }
+            guard ref == nil else { return }
+            RegisterEventHotKey(UInt32(kVK_ANSI_P), UInt32(optionKey | cmdKey),
+                                EventHotKeyID(signature: OSType(0x43445052), id: 1),
+                                GetApplicationEventTarget(), 0, &ref)
+        } else if let r = ref {
+            UnregisterEventHotKey(r)
+            ref = nil
+        }
+    }
+
+    // Clicks the app's status item, which SwiftUI offers no API to open.
+    static func togglePanel() {
+        func button(in v: NSView?) -> NSButton? {
+            guard let v else { return nil }
+            if let b = v as? NSButton { return b }
+            for sub in v.subviews { if let b = button(in: sub) { return b } }
+            return nil
+        }
+        for w in NSApp.windows where String(describing: type(of: w)).contains("StatusBarWindow") {
+            if let b = button(in: w.contentView) { b.performClick(nil); return }
+        }
+    }
 }
 
 // MARK: - Model
@@ -226,27 +316,108 @@ final class ProfileStore: ObservableObject {
     @Published var outdatedProfiles: [String] = []
     @Published var showAdd = false                 // set from the menu bar, shown by the window
     @Published var usage: [String: Usage] = [:]    // keyed by Profile.id
+    @Published var lastUsageUpdate: Date?
+    @Published var isRefreshingUsage = false
+    @Published var removeRequest: Profile?         // set from the menu bar, confirmed by the window
+
+    // Preferences, persisted in UserDefaults.
+    @Published var alertsEnabled = UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(alertsEnabled, forKey: "alertsEnabled")
+            if alertsEnabled { Notifier.shared.setUp() }
+        }
+    }
+    @Published var shortcutEnabled = UserDefaults.standard.object(forKey: "shortcutEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(shortcutEnabled, forKey: "shortcutEnabled")
+            GlobalShortcut.setEnabled(shortcutEnabled)
+        }
+    }
+    @Published var usageInterval: Double = {
+        let v = UserDefaults.standard.double(forKey: "usageInterval")
+        return v > 0 ? v : 300
+    }() {
+        didSet {
+            UserDefaults.standard.set(usageInterval, forKey: "usageInterval")
+            scheduleUsageTimer()
+        }
+    }
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch { errorMessage = error.localizedDescription }
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    // Last alert level sent per profile for the 5-hour limit: 0 below 80%, 1 from 80%, 2 from 95%.
+    private var alertLevel: [String: Int] = [:]
 
     // Owned by the store (not a view) so the menu bar stays live with the window closed.
     private var timers: [Timer] = []
+    private var usageTimer: Timer?
     init() {
         refresh()
-        timers = [
-            Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshRunning() },
-            Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refreshUsage() },
-        ]
+        timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshRunning() }]
+        scheduleUsageTimer()
+        if alertsEnabled { Notifier.shared.setUp() }
+        GlobalShortcut.setEnabled(shortcutEnabled)
+        refreshUsage()
+    }
+
+    private func scheduleUsageTimer() {
+        usageTimer?.invalidate()
+        usageTimer = Timer.scheduledTimer(withTimeInterval: usageInterval, repeats: true) { [weak self] _ in
+            self?.refreshUsage()
+        }
+    }
+
+    // Called when the menu bar panel opens: skip the network if the data is fresh.
+    func refreshUsageIfStale() {
+        if let t = lastUsageUpdate, Date().timeIntervalSince(t) < 30 { return }
         refreshUsage()
     }
 
     func refreshUsage() {
+        guard !isRefreshingUsage else { return }
+        isRefreshingUsage = true
         let targets = profiles.map { ($0.id, $0.dataDir ?? appSupport + "/Claude") }
         Task.detached {
             for (id, dir) in targets {
                 let u: Usage
                 do { u = try await fetchUsage(dataDir: dir) }
                 catch { u = Usage(fiveHour: nil, sevenDay: nil, error: error.localizedDescription) }
-                await MainActor.run { self.usage[id] = u }
+                await MainActor.run { self.apply(u, for: id) }
             }
+            await MainActor.run {
+                self.lastUsageUpdate = Date()
+                self.isRefreshingUsage = false
+            }
+        }
+    }
+
+    private func apply(_ u: Usage, for id: String) {
+        if usage[id] != u { usage[id] = u }
+        guard let v = u.fiveHour else { return }
+        let level = v >= 95 ? 2 : (v >= 80 ? 1 : 0)
+        // First sample after launch only records the level, so restarting the
+        // app at 85% doesn't fire a stale alert.
+        guard let prev = alertLevel[id] else { alertLevel[id] = level; return }
+        if level > prev {
+            alertLevel[id] = level
+            if alertsEnabled {
+                var body = "\(Int(v.rounded()))% of the 5-hour limit used."
+                if let r = resetText(u.fiveHourReset) { body += " Limit \(r)." }
+                Notifier.shared.post(title: "\(id): \(level == 2 ? "almost at the limit" : "getting close to the limit")", body: body)
+            }
+        } else if level < prev && v < 30 {
+            alertLevel[id] = level
+            if alertsEnabled {
+                Notifier.shared.post(title: "\(id): 5-hour limit reset", body: "Usage is back to \(Int(v.rounded()))%. You're good to go.")
+            }
+        } else if level < prev {
+            alertLevel[id] = level
         }
     }
 
@@ -379,8 +550,19 @@ final class ProfileStore: ObservableObject {
 
 // MARK: - App
 
+// A menu bar app: no Dock icon (LSUIElement), and the window is only a
+// utility surface for adding/removing profiles. Opening the app again (Spotlight,
+// Finder) pops the menu bar panel instead of a window.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { GlobalShortcut.togglePanel() }
+        return flag
+    }
+}
+
 @main
 struct ClaudeProfilesApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = ProfileStore()
 
     var body: some Scene {
@@ -393,10 +575,49 @@ struct ClaudeProfilesApp: App {
         MenuBarExtra {
             MenuContent(store: store)
         } label: {
-            let top = store.usage.values.compactMap(\.fiveHour).max()
-            Image(systemName: "gauge.with.needle")
-            if let top { Text("\(Int(top.rounded()))%") }
+            MenuBarLabel(store: store)
         }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+struct MenuBarLabel: View {
+    @ObservedObject var store: ProfileStore
+
+    var body: some View {
+        let top = store.usage.values.compactMap(\.fiveHour).max()
+        if let img = menuBarImage(percent: top) {
+            Image(nsImage: img)
+        } else {
+            Image(systemName: "gauge.with.needle")
+        }
+    }
+
+    // Rendered to an image so it can be colored when a limit is close; plain
+    // levels stay a template image that follows the menu bar's light/dark tint.
+    @MainActor private func menuBarImage(percent: Double?) -> NSImage? {
+        let warn: Color? = percent.map { $0 >= 90 ? Color.red : ($0 >= 75 ? Color.orange : nil) } ?? nil
+        let name: String
+        switch percent ?? 0 {
+        case ..<17: name = "gauge.with.dots.needle.0percent"
+        case ..<42: name = "gauge.with.dots.needle.33percent"
+        case ..<59: name = "gauge.with.dots.needle.50percent"
+        case ..<84: name = "gauge.with.dots.needle.67percent"
+        default: name = "gauge.with.dots.needle.100percent"
+        }
+        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : "gauge.with.needle"
+        let view = HStack(spacing: 4) {
+            Image(systemName: symbol)
+            if let percent { Text("\(Int(percent.rounded()))%").monospacedDigit() }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(warn ?? Color.black)
+        .padding(.horizontal, 2)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let img = renderer.nsImage else { return nil }
+        img.isTemplate = (warn == nil)
+        return img
     }
 }
 
@@ -404,26 +625,281 @@ struct MenuContent: View {
     @ObservedObject var store: ProfileStore
     @Environment(\.openWindow) private var openWindow
 
-    var body: some View {
-        ForEach(store.profiles) { p in
-            let running = store.running.contains(p.id)
-            // launch() focuses an already-running instance instead of opening another.
-            Button("\(running ? "●" : "○") \(p.name)   \(store.usage[p.id]?.summary ?? "…")") { store.launch(p) }
+    // The profile with the most 5-hour headroom, when the gap is worth pointing out.
+    private var mostFreeID: String? {
+        let vals = store.profiles.compactMap { p -> (String, Double)? in
+            guard let v = store.usage[p.id]?.fiveHour else { return nil }
+            return (p.id, v)
         }
-        Divider()
-        Button("New Profile…") {
-            store.showAdd = true
-            showWindow()
-        }
-        Button("Open Claude Profiles") { showWindow() }
-        Button("Refresh Usage") { store.refresh(); store.refreshUsage() }
-        Divider()
-        Button("Quit") { NSApp.terminate(nil) }
+        guard vals.count >= 2, let lo = vals.min(by: { $0.1 < $1.1 }),
+              let hi = vals.max(by: { $0.1 < $1.1 }), hi.1 - lo.1 >= 15 else { return nil }
+        return lo.0
     }
 
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            VStack(spacing: 2) {
+                ForEach(store.profiles) { p in
+                    MenuProfileRow(
+                        profile: p,
+                        isRunning: store.running.contains(p.id),
+                        usage: store.usage[p.id],
+                        isMostFree: p.id == mostFreeID,
+                        launch: { store.launch(p); closePanel() },
+                        reveal: { store.revealData(p) },
+                        setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
+                        remove: p.isDefault ? nil : { store.removeRequest = p; showWindow() }
+                    )
+                }
+            }
+            .padding(.horizontal, 6)
+
+            Divider().padding(.vertical, 8)
+
+            VStack(spacing: 0) {
+                MenuAction(title: "New Profile…", symbol: "plus.circle") {
+                    store.showAdd = true
+                    showWindow()
+                }
+                MenuAction(title: "Open Claude Profiles", symbol: "macwindow") { showWindow() }
+                MenuAction(title: "Quit", symbol: "power") { NSApp.terminate(nil) }
+            }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 6)
+        }
+        .frame(width: 300)
+        .onAppear { store.refreshUsageIfStale() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            store.refreshUsageIfStale()
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Claude Profiles").font(.headline)
+                if let t = store.lastUsageUpdate {
+                    Text("Updated \(Text(t, style: .relative)) ago")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Fetching usage…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button { store.refresh(); store.refreshUsage() } label: {
+                if store.isRefreshingUsage {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 20, height: 20)
+            .help("Refresh usage")
+            settingsMenu
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Toggle("Usage alerts (80% and 95%)", isOn: $store.alertsEnabled)
+            Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin },
+                                                    set: { store.setLaunchAtLogin($0) }))
+            Toggle("Shortcut ⌥⌘P opens this panel", isOn: $store.shortcutEnabled)
+            Menu("Refresh usage every") {
+                Picker("Refresh usage every", selection: $store.usageInterval) {
+                    ForEach([60.0, 120, 300, 600, 900], id: \.self) { Text("\(Int($0 / 60)) min").tag($0) }
+                }
+                .pickerStyle(.inline)
+            }
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 22, height: 20)
+        .help("Settings")
+    }
+
+    private func closePanel() { NSApp.keyWindow?.orderOut(nil) }
+
     private func showWindow() {
+        closePanel()
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: "main")
+    }
+}
+
+struct MenuProfileRow: View {
+    let profile: Profile
+    let isRunning: Bool
+    let usage: Usage?
+    let isMostFree: Bool
+    let launch: () -> Void
+    let reveal: () -> Void
+    let setColor: ((String) -> Void)?
+    let remove: (() -> Void)?
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: launch) {
+            VStack(alignment: .leading, spacing: 7) {
+                titleRow
+                usageBody
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button(isRunning ? "Focus" : "Launch") { launch() }
+            Button("Reveal Data Folder in Finder") { reveal() }
+            if let setColor {
+                Menu("Change Color") {
+                    ForEach(ProfileColor.all) { c in
+                        Button(c.name.capitalized) { setColor(c.name) }
+                    }
+                }
+            }
+            if let remove {
+                Divider()
+                Button("Remove…", role: .destructive) { remove() }
+            }
+        }
+    }
+
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            Circle().fill(profile.color.swatch).frame(width: 10, height: 10)
+            Text(profile.name).font(.system(size: 13, weight: .semibold))
+            if isMostFree {
+                Text("Most free")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(profile.color.swatch)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(profile.color.swatch.opacity(0.18)))
+            }
+            Spacer()
+            if hovering {
+                HStack(spacing: 3) {
+                    Text(isRunning ? "Focus" : "Launch")
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if isRunning {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Text("Running")
+                }
+                .font(.caption)
+                .foregroundStyle(Color.green)
+            }
+        }
+    }
+
+    @ViewBuilder private var usageBody: some View {
+        if let usage {
+            if usage.needsSignIn {
+                note("Not signed in. Launch it and sign in to see usage.", symbol: "person.crop.circle.badge.exclamationmark")
+            } else if let error = usage.error {
+                note("Usage unavailable: \(error)", symbol: "exclamationmark.triangle")
+            } else if usage.hasNoData {
+                note("No usage data yet.", symbol: "chart.bar")
+            } else {
+                HStack(alignment: .top, spacing: 14) {
+                    UsageBar(label: "5 hours", value: usage.fiveHour, reset: usage.fiveHourReset, tint: profile.color.swatch)
+                    UsageBar(label: "Week", value: usage.sevenDay, reset: usage.sevenDayReset, tint: profile.color.swatch)
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Loading usage…").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func note(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct UsageBar: View {
+    let label: String
+    let value: Double?
+    let reset: Date?
+    let tint: Color
+
+    private var fraction: Double { min(max((value ?? 0) / 100, 0), 1) }
+    private var barColor: Color {
+        guard let value else { return .secondary }
+        if value >= 90 { return .red }
+        if value >= 75 { return .orange }
+        return tint
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(.caption.monospacedDigit().weight(.medium))
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    Capsule().fill(barColor).frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 5)
+            if let text = resetText(reset) {
+                Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct MenuAction: View {
+    let title: String
+    let symbol: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).frame(width: 18).foregroundStyle(.secondary)
+                Text(title)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -434,6 +910,25 @@ struct ContentView: View {
     @State private var removing: Profile?
     @State private var confirmWipe: Profile?
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 180), spacing: 14)]
+
+    // SwiftUI opens the window at launch; a menu bar app shouldn't. Only the
+    // first appearance is swallowed, and only if nothing asked for the window.
+    private static var launchHandled = false
+    private func hideLaunchWindow() {
+        guard !Self.launchHandled else { return }
+        Self.launchHandled = true
+        guard !store.showAdd, store.removeRequest == nil else { return }
+        DispatchQueue.main.async {
+            NSApp.windows.first { $0.title == "Claude Profiles" }?.close()
+        }
+    }
+
+    private func takeRemoveRequest() {
+        if let p = store.removeRequest {
+            removing = p
+            store.removeRequest = nil
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -459,7 +954,12 @@ struct ContentView: View {
         }
         .frame(minWidth: 580, idealWidth: 640, minHeight: 380, idealHeight: 420)
         .background(WindowBackground())
-        .onAppear { store.setUp() }
+        .onAppear {
+            store.setUp()
+            takeRemoveRequest()
+            hideLaunchWindow()
+        }
+        .onReceive(store.$removeRequest) { _ in takeRemoveRequest() }
         .sheet(isPresented: $store.showAdd) {
             AddSheet { name, color in store.add(name, color: color) }
         }

@@ -65,12 +65,16 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
   purple or pink. The running profile's Dock tile wears its color.
 - **A launcher per profile in Spotlight**: "Claude Work", "Claude Personal".
   Clicking one opens the profile, or brings it forward if it's already open.
-- **The Claude Profiles window**: a card per profile with running status,
-  launch/focus, color, and add/remove.
 - **Profiles update themselves**: each one installs Claude's updates on its own
   schedule, and a watchdog puts it back on its profile when an update relaunches it.
-- **A menu bar item**: each profile's 5-hour and weekly usage at a glance, click
-  a profile to launch or focus it, and add a new one without opening the window.
+- **A menu bar app**: no Dock icon. Each profile shows its 5-hour and weekly
+  usage with reset times, and the one with the most headroom is flagged. Click a
+  profile to launch or focus it; right-click to change its color, reveal its data
+  or remove it. The icon turns orange or red near a limit, and the gear menu has
+  usage alerts (80% / 95% / reset), launch at login, a global ⌥⌘P shortcut and the
+  refresh interval. Opening Claude Profiles again from Spotlight pops the panel;
+  the window (New Profile…, Open Claude Profiles) is only used to add and remove
+  profiles.
 - **A CLI (`cdp`)** for scripting, shipped inside the app.
 
 ![Colored Dock tiles for running profiles](docs/dock.png)
