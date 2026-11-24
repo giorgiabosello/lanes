@@ -15,6 +15,7 @@ import CommonCrypto
 import UserNotifications
 import ServiceManagement
 import Carbon.HIToolbox
+import WidgetKit
 
 // MARK: - Shared helpers
 
@@ -252,34 +253,56 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
+    // Fires at `date` even if the app has quit by then; posting again with the
+    // same identifier replaces the pending one.
+    func schedule(_ identifier: String, at date: Date, title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, date.timeIntervalSinceNow), repeats: false)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
+    }
+    func cancel(_ identifiers: [String]) {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
     }
 }
 
-// Global shortcut (⌥⌘P) that opens the menu bar panel.
+// Global shortcuts: ⌥⌘P opens the menu bar panel, ⌥⌘B opens the profile with
+// the most headroom. Each can be turned off on its own.
 enum GlobalShortcut {
-    private static var ref: EventHotKeyRef?
+    enum Key: UInt32 { case panel = 1, best = 2 }
+    private static var refs: [Key: EventHotKeyRef] = [:]
     private static var handlerInstalled = false
 
-    static func setEnabled(_ on: Bool) {
+    static func setEnabled(_ key: Key, _ on: Bool) {
         if on {
             if !handlerInstalled {
                 var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-                InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-                    DispatchQueue.main.async { GlobalShortcut.togglePanel() }
+                InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+                    var hk = EventHotKeyID()
+                    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                      nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
+                    DispatchQueue.main.async {
+                        if hk.id == Key.best.rawValue { ProfileStore.shared.launchBest() } else { GlobalShortcut.togglePanel() }
+                    }
                     return noErr
                 }, 1, &spec, nil, nil)
                 handlerInstalled = true
             }
-            guard ref == nil else { return }
-            RegisterEventHotKey(UInt32(kVK_ANSI_P), UInt32(optionKey | cmdKey),
-                                EventHotKeyID(signature: OSType(0x43445052), id: 1),
+            guard refs[key] == nil else { return }
+            var ref: EventHotKeyRef?
+            RegisterEventHotKey(UInt32(key == .panel ? kVK_ANSI_P : kVK_ANSI_B), UInt32(optionKey | cmdKey),
+                                EventHotKeyID(signature: OSType(0x43445052), id: key.rawValue),
                                 GetApplicationEventTarget(), 0, &ref)
-        } else if let r = ref {
+            refs[key] = ref
+        } else if let r = refs[key] {
             UnregisterEventHotKey(r)
-            ref = nil
+            refs[key] = nil
         }
     }
 
@@ -298,30 +321,6 @@ enum GlobalShortcut {
 }
 
 // MARK: - Model
-
-// Mirrors the HUES palette in bin/cdp — names must stay in sync.
-struct ProfileColor: Identifiable, Hashable {
-    let name: String
-    let hue: Double        // degrees of hue rotation applied to Claude's icon
-    let swatch: Color      // matching UI accent
-
-    var id: String { name }
-
-    static let all: [ProfileColor] = [
-        ProfileColor(name: "orange", hue: 0,   swatch: Color(red: 0.85, green: 0.47, blue: 0.34)),
-        ProfileColor(name: "red",    hue: -25, swatch: Color(red: 0.86, green: 0.34, blue: 0.32)),
-        ProfileColor(name: "yellow", hue: 40,  swatch: Color(red: 0.80, green: 0.63, blue: 0.25)),
-        ProfileColor(name: "green",  hue: 110, swatch: Color(red: 0.36, green: 0.69, blue: 0.42)),
-        ProfileColor(name: "teal",   hue: 160, swatch: Color(red: 0.27, green: 0.65, blue: 0.62)),
-        ProfileColor(name: "blue",   hue: 200, swatch: Color(red: 0.33, green: 0.56, blue: 0.83)),
-        ProfileColor(name: "purple", hue: 250, swatch: Color(red: 0.62, green: 0.47, blue: 0.83)),
-        ProfileColor(name: "pink",   hue: 310, swatch: Color(red: 0.83, green: 0.42, blue: 0.62)),
-    ]
-
-    static func named(_ name: String) -> ProfileColor {
-        all.first { $0.name == name } ?? all[0]
-    }
-}
 
 struct Profile: Identifiable, Hashable {
     let name: String
@@ -360,9 +359,16 @@ final class ProfileStore: ObservableObject {
     @Published var shortcutEnabled = UserDefaults.standard.object(forKey: "shortcutEnabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(shortcutEnabled, forKey: "shortcutEnabled")
-            GlobalShortcut.setEnabled(shortcutEnabled)
+            GlobalShortcut.setEnabled(.panel, shortcutEnabled)
         }
     }
+    @Published var bestShortcutEnabled = UserDefaults.standard.object(forKey: "bestShortcutEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(bestShortcutEnabled, forKey: "bestShortcutEnabled")
+            GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
+        }
+    }
+    @Published var history: [String: [UsageSample]] = UsageHistory.load()
     @Published var usageInterval: Double = {
         let v = UserDefaults.standard.double(forKey: "usageInterval")
         return v > 0 ? v : 300
@@ -395,7 +401,8 @@ final class ProfileStore: ObservableObject {
         }]
         scheduleUsageTimer()
         if alertsEnabled { Notifier.shared.setUp() }
-        GlobalShortcut.setEnabled(shortcutEnabled)
+        GlobalShortcut.setEnabled(.panel, shortcutEnabled)
+        GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
         refreshUsage()
         startLinkRouting()
     }
@@ -427,12 +434,14 @@ final class ProfileStore: ObservableObject {
             await MainActor.run {
                 self.lastUsageUpdate = Date()
                 self.isRefreshingUsage = false
+                self.publishUsage()
             }
         }
     }
 
     private func apply(_ u: Usage, for id: String) {
         if usage[id] != u { usage[id] = u }
+        scheduleResetAlerts(u, for: id)
         guard let v = u.fiveHour else { return }
         let level = v >= 95 ? 2 : (v >= 80 ? 1 : 0)
         // First sample after launch only records the level, so restarting the
@@ -445,13 +454,86 @@ final class ProfileStore: ObservableObject {
                 if let r = resetText(u.fiveHourReset) { body += " Limit \(r)." }
                 Notifier.shared.post(title: "\(id): \(level == 2 ? "almost at the limit" : "getting close to the limit")", body: body)
             }
-        } else if level < prev && v < 30 {
-            alertLevel[id] = level
-            if alertsEnabled {
-                Notifier.shared.post(title: "\(id): 5-hour limit reset", body: "Usage is back to \(Int(v.rounded()))%. You're good to go.")
-            }
         } else if level < prev {
             alertLevel[id] = level
+        }
+    }
+
+    // A limit that's nearly used up gets a notification at its exact reset
+    // time, scheduled with the system so it fires even if this app has quit.
+    // Re-scheduled on every refresh (same identifier), so a moved reset time
+    // or a drop back under 80% is picked up.
+    private func scheduleResetAlerts(_ u: Usage, for id: String) {
+        let limits: [(key: String, label: String, value: Double?, reset: Date?)] = [
+            ("5h", "5-hour limit", u.fiveHour, u.fiveHourReset),
+            ("7d", "weekly limit", u.sevenDay, u.sevenDayReset),
+        ]
+        for l in limits {
+            let ident = "reset-\(l.key)-\(id)"
+            guard alertsEnabled, let v = l.value, v >= 80, let r = l.reset, r > Date() else {
+                Notifier.shared.cancel([ident]); continue
+            }
+            Notifier.shared.schedule(ident, at: r, title: "\(id): \(l.label) reset",
+                                     body: "\(id) has its full \(l.label) again. You're good to go.")
+        }
+    }
+
+    // MARK: Usage snapshot, history, best profile
+
+    // Writes usage.json (widget, `cdp usage --json`) and usage.tsv (`cdp usage`,
+    // `cdp launch --best`), records history, and asks WidgetKit to redraw.
+    func publishUsage() {
+        let now = Date()
+        let entries = profiles.map { p -> UsageSnapshot.Entry in
+            let u = usage[p.id]
+            return .init(name: p.name, color: p.colorName, running: running.contains(p.id),
+                         fiveHour: u?.fiveHour, sevenDay: u?.sevenDay,
+                         fiveHourReset: u?.fiveHourReset, sevenDayReset: u?.sevenDayReset, error: u?.error)
+        }
+        let dir = UsageSnapshot.directory
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let data = try? UsageSnapshot.encoder.encode(UsageSnapshot(updated: now, profiles: entries)) {
+            try? data.write(to: URL(fileURLWithPath: UsageSnapshot.path), options: .atomic)
+        }
+        // One line per profile, tab-separated, for the shell: name color running
+        // 5h% 5h-reset 7d% 7d-reset error. Empty field = unknown; times are epoch.
+        func n(_ v: Double?) -> String { v.map { String(Int($0.rounded())) } ?? "" }
+        func t(_ d: Date?) -> String { d.map { String(Int($0.timeIntervalSince1970)) } ?? "" }
+        var tsv = "# updated \(Int(now.timeIntervalSince1970))\n"
+        for e in entries {
+            let err = (e.error ?? "").replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+            tsv += [e.name, e.color, e.running ? "1" : "0", n(e.fiveHour), t(e.fiveHourReset),
+                    n(e.sevenDay), t(e.sevenDayReset), err].joined(separator: "\t") + "\n"
+        }
+        try? tsv.write(toFile: dir + "/usage.tsv", atomically: true, encoding: .utf8)
+
+        var h = history
+        for e in entries where e.error == nil && (e.fiveHour != nil || e.sevenDay != nil) {
+            UsageHistory.append(UsageSample(t: now, h: e.fiveHour, w: e.sevenDay), to: &h[e.name, default: []])
+        }
+        UsageHistory.prune(&h, profiles: Set(entries.map(\.name)))
+        if h != history { history = h; UsageHistory.save(h) }
+
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // Most 5-hour headroom, weekly as the tie-breaker; a profile whose weekly
+    // limit is used up only wins if every one is.
+    func bestProfile() -> Profile? {
+        let scored = profiles.compactMap { p -> (Profile, Double, Double)? in
+            guard let u = usage[p.id], u.error == nil, let h = u.fiveHour else { return nil }
+            return (p, h, u.sevenDay ?? 0)
+        }
+        let usable = scored.filter { $0.2 < 100 }
+        return (usable.isEmpty ? scored : usable).min { ($0.1, $0.2) < ($1.1, $1.2) }?.0
+    }
+
+    func launchBest() {
+        if let p = bestProfile() {
+            launch(p)
+        } else {
+            NSSound.beep()
+            Notifier.shared.post(title: "No usage data yet", body: "Claude Profiles can't tell which profile is most free until usage loads.")
         }
     }
 
@@ -769,7 +851,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
-              let url = URL(string: s), url.scheme?.lowercased() == "claude" else { return }
+              let url = URL(string: s) else { return }
+        // claude-profiles:// comes from the widget: launch?profile=<name>, or open.
+        if url.scheme?.lowercased() == "claude-profiles" {
+            DispatchQueue.main.async {
+                let store = ProfileStore.shared
+                let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first { $0.name == "profile" }?.value
+                if url.host == "launch", let name, let p = store.profiles.first(where: { $0.name == name }) {
+                    store.launch(p)
+                } else {
+                    GlobalShortcut.togglePanel()
+                }
+            }
+            return
+        }
+        guard url.scheme?.lowercased() == "claude" else { return }
         // Let the Apple Event return before the (modal) picker runs.
         DispatchQueue.main.async { ProfileStore.shared.route(url) }
     }
@@ -867,6 +964,7 @@ struct MenuContent: View {
                         isRunning: store.running.contains(p.id),
                         usage: store.usage[p.id],
                         isMostFree: p.id == mostFreeID,
+                        history: store.history[p.name] ?? [],
                         launch: { store.launch(p); closePanel() },
                         reveal: { store.revealData(p) },
                         setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
@@ -879,6 +977,12 @@ struct MenuContent: View {
             Divider().padding(.vertical, 8)
 
             VStack(spacing: 0) {
+                if let best = store.bestProfile() {
+                    MenuAction(title: "Open Most Free: \(best.name)", symbol: "bolt.circle",
+                               shortcut: store.bestShortcutEnabled ? "⌥⌘B" : nil) {
+                        store.launch(best); closePanel()
+                    }
+                }
                 MenuAction(title: "New Profile…", symbol: "plus.circle") {
                     store.showAdd = true
                     showWindow()
@@ -927,10 +1031,11 @@ struct MenuContent: View {
 
     private var settingsMenu: some View {
         Menu {
-            Toggle("Usage alerts (80% and 95%)", isOn: $store.alertsEnabled)
+            Toggle("Usage alerts (80%, 95% and resets)", isOn: $store.alertsEnabled)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin },
                                                     set: { store.setLaunchAtLogin($0) }))
             Toggle("Shortcut ⌥⌘P opens this panel", isOn: $store.shortcutEnabled)
+            Toggle("Shortcut ⌥⌘B opens the most free profile", isOn: $store.bestShortcutEnabled)
             Toggle("Send claude:// links to the right profile", isOn: $store.routeLinks)
             Menu("Refresh usage every") {
                 Picker("Refresh usage every", selection: $store.usageInterval) {
@@ -961,6 +1066,7 @@ struct MenuProfileRow: View {
     let isRunning: Bool
     let usage: Usage?
     let isMostFree: Bool
+    let history: [UsageSample]
     let launch: () -> Void
     let reveal: () -> Void
     let setColor: ((String) -> Void)?
@@ -1013,6 +1119,7 @@ struct MenuProfileRow: View {
                     .background(Capsule().fill(profile.color.swatch.opacity(0.18)))
             }
             Spacer()
+            Sparkline(samples: history, tint: profile.color.swatch)
             if hovering {
                 HStack(spacing: 3) {
                     Text(isRunning ? "Focus" : "Launch")
@@ -1068,12 +1175,7 @@ struct UsageBar: View {
     let tint: Color
 
     private var fraction: Double { min(max((value ?? 0) / 100, 0), 1) }
-    private var barColor: Color {
-        guard let value else { return .secondary }
-        if value >= 90 { return .red }
-        if value >= 75 { return .orange }
-        return tint
-    }
+    private var barColor: Color { usageColor(value, tint: tint) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -1098,9 +1200,85 @@ struct UsageBar: View {
     }
 }
 
+// MARK: - Usage history
+
+// One usage reading. Short keys: the file holds a week of them per profile.
+struct UsageSample: Codable, Equatable {
+    var t: Date
+    var h: Double?   // 5-hour %
+    var w: Double?   // weekly %
+}
+
+// A week of readings per profile in usage-history.json, at most one every
+// ~10 minutes whatever the refresh interval. Local only, never sent anywhere.
+enum UsageHistory {
+    static let keep: TimeInterval = 7 * 86400
+    static var path: String { UsageSnapshot.directory + "/usage-history.json" }
+
+    static func load() -> [String: [UsageSample]] {
+        guard let data = FileManager.default.contents(atPath: path) else { return [:] }
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .secondsSince1970
+        return (try? d.decode([String: [UsageSample]].self, from: data)) ?? [:]
+    }
+
+    static func save(_ h: [String: [UsageSample]]) {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .secondsSince1970
+        if let data = try? e.encode(h) { try? data.write(to: URL(fileURLWithPath: path), options: .atomic) }
+    }
+
+    static func append(_ s: UsageSample, to list: inout [UsageSample]) {
+        if let last = list.last, s.t.timeIntervalSince(last.t) < 9 * 60 { return }
+        list.append(s)
+    }
+
+    static func prune(_ h: inout [String: [UsageSample]], profiles: Set<String>) {
+        let cutoff = Date().addingTimeInterval(-keep)
+        for k in h.keys {
+            if !profiles.contains(k) { h[k] = nil; continue }
+            h[k]?.removeAll { $0.t < cutoff }
+        }
+    }
+}
+
+// The last 24 hours of 5-hour usage, as a small line in the profile row.
+struct Sparkline: View {
+    let samples: [UsageSample]
+    let tint: Color
+    private let window: TimeInterval = 24 * 3600
+
+    var body: some View {
+        let start = Date().addingTimeInterval(-window)
+        let pts = samples.compactMap { s -> (Double, Double)? in
+            guard s.t >= start, let h = s.h else { return nil }
+            return (s.t.timeIntervalSince(start) / window, min(max(h, 0), 100) / 100)
+        }
+        if pts.count >= 2 {
+            Canvas { ctx, size in
+                func at(_ p: (Double, Double)) -> CGPoint {
+                    CGPoint(x: p.0 * size.width, y: size.height - 1 - p.1 * (size.height - 2))
+                }
+                var line = Path()
+                line.move(to: at(pts[0]))
+                for p in pts.dropFirst() { line.addLine(to: at(p)) }
+                var area = line
+                area.addLine(to: CGPoint(x: at(pts[pts.count - 1]).x, y: size.height))
+                area.addLine(to: CGPoint(x: at(pts[0]).x, y: size.height))
+                area.closeSubpath()
+                ctx.fill(area, with: .color(tint.opacity(0.18)))
+                ctx.stroke(line, with: .color(tint), lineWidth: 1.2)
+            }
+            .frame(width: 56, height: 16)
+            .help("5-hour usage over the last 24 hours (peak \(Int((pts.map(\.1).max() ?? 0) * 100))%)")
+        }
+    }
+}
+
 struct MenuAction: View {
     let title: String
     let symbol: String
+    var shortcut: String? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -1110,6 +1288,7 @@ struct MenuAction: View {
                 Image(systemName: symbol).frame(width: 18).foregroundStyle(.secondary)
                 Text(title)
                 Spacer()
+                if let shortcut { Text(shortcut).font(.caption).foregroundStyle(.tertiary) }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)

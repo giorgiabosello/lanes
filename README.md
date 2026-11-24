@@ -73,13 +73,24 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
 - **Profiles update themselves**: each one installs Claude's updates on its own
   schedule, and a watchdog puts it back on its profile when an update relaunches it.
 - **A menu bar app**: no Dock icon. Each profile shows its 5-hour and weekly
-  usage with reset times, and the one with the most headroom is flagged. Click a
-  profile to launch or focus it; right-click to change its color, reveal its data
-  or remove it. The icon turns orange or red near a limit, and the gear menu has
-  usage alerts (80% / 95% / reset), launch at login, a global ⌥⌘P shortcut and the
-  refresh interval. Opening Claude Profiles again from Spotlight pops the panel;
-  the window (New Profile…, Open Claude Profiles) is only used to add and remove
-  profiles.
+  usage with reset times and a sparkline of its last 24 hours, and the one with
+  the most headroom is flagged. Click a profile to launch or focus it; right-click
+  to change its color, reveal its data or remove it. The icon turns orange or red
+  near a limit. The gear menu has usage alerts, launch at login, the global
+  shortcuts and the refresh interval. Opening Claude Profiles again from
+  Spotlight pops the panel; the window (New Profile…, Open Claude Profiles) is
+  only used to add and remove profiles.
+- **Open the most free profile**: ⌥⌘B (or "Open Most Free" in the panel, or
+  `cdp launch --best`) launches or focuses the profile with the most 5-hour
+  headroom. A profile whose weekly limit is used up is skipped unless all are.
+- **Usage alerts**: at 80% and 95% of the 5-hour limit, and, once a 5-hour or
+  weekly limit passes 80%, a notification at the exact minute it resets
+  ("Work: 5-hour limit reset"). The reset alert is scheduled with macOS, so it
+  arrives even if Claude Profiles has quit by then.
+- **A desktop widget** (macOS 14+): small, medium or large, with each profile's
+  5-hour and weekly bars and live reset countdowns. Click a profile in the
+  medium or large size to open it. Add it from the desktop's Edit Widgets… menu
+  and search "Claude Profiles".
 - **`claude://` links go to the right profile**: sign-in tokens and "open in
   the desktop app" links. With one Claude running it gets the link; with
   several (or none) a picker asks, preselecting the window you used last. A
@@ -107,6 +118,9 @@ cdp add personal --color blue   # create profile + Spotlight launcher
 cdp launch personal             # launch, or focus if already running
 cdp color personal teal         # change the profile's color
 cdp list                        # profiles and launcher health
+cdp usage                       # 5-hour and weekly usage per profile, with resets
+cdp usage --json                # the same, for scripts and status lines
+cdp launch --best               # open the profile with the most 5-hour headroom
 cdp watchdog status             # LaunchAgent state + clones running off-profile
 cdp remove personal             # remove launcher; asks before touching data
 cdp setup                       # point launchers + watchdog at this cdp
@@ -119,8 +133,12 @@ The window, the launchers and the CLI all run the same `cdp` script.
 
 - No telemetry. The only network calls are the menu bar's usage checks to
   claude.ai, made with each profile's own session (read from its cookie jar,
-  never stored or sent elsewhere). About 1,900 lines of shell and Swift you can
+  never stored or sent elsewhere). About 3,200 lines of shell and Swift you can
   read in one sitting.
+- Usage numbers are saved locally for the widget, the CLI and the sparklines:
+  `~/Library/Application Support/claude-desktop-profiles/usage.json`,
+  `usage.tsv` and `usage-history.json` (a week of readings, one per ~10 minutes).
+  They hold percentages and reset times only, no cookies or account details.
 - A profile is a folder: `~/Library/Application Support/Claude-<Name>`. Its
   Claude Code config lives in `<profile>/claude-config`.
 - Your default Claude install is never touched. Profiles start empty and never
@@ -179,6 +197,13 @@ macOS experience.
   clone would start it bare, on the default account — so a stopped profile is
   started through `cdp launch` first. Link contents are never logged or shown
   (the sign-in token is in the query).
+- **Usage snapshot**: only the menu bar app talks to claude.ai (it holds the
+  cookie decryption). After each refresh it writes `usage.json` and
+  `usage.tsv` and calls `WidgetCenter.reloadAllTimelines()`; `cdp usage`,
+  `cdp launch --best` and the widget just read those files, so they cost no
+  network calls and need no Keychain access. The widget is a sandboxed WidgetKit
+  extension in `Contents/PlugIns`, ad-hoc signed like the app, whose only file
+  access is a read-only sandbox exception for that one folder.
 - **Focusing**: if the profile is already running, `cdp launch` activates
   its PID via `NSRunningApplication` instead of re-launching — Claude's
   second-instance handler would otherwise open a new window per click.

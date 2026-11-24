@@ -25,7 +25,7 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-CDP_VERSION="0.5.0"
+CDP_VERSION="0.6.0"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
@@ -104,7 +104,7 @@ swift_compile() {
   shift
   local -a slices=()
   for arch in ${=CDP_ARCHS:-$(uname -m)}; do
-    swiftc -O -target "$arch-apple-macos13.0" -o "$out.$arch" "$@" || return 1
+    swiftc -O -target "$arch-apple-macos${CDP_MIN_MACOS:-13.0}" -o "$out.$arch" "$@" || return 1
     slices+=("$out.$arch")
   done
   lipo -create -output "$out" $slices
@@ -781,9 +781,113 @@ cmd_launch() {
   # chooser. Re-homes any stray clone first so a post-update relaunch can't
   # keep serving the default account under a profile's name.
   local raw="${1:-}"
-  [[ -n "$raw" ]] || err "Usage: cdp launch <name>"
+  [[ -n "$raw" ]] || err "Usage: cdp launch <name> | cdp launch --best"
+  if [[ "$raw" == "--best" ]]; then
+    raw=$(best_profile) ||
+      err "No usage data to choose from. Open the Claude Profiles app (menu bar) so it can load usage."
+    info "Most free: $raw"
+    if [[ "$raw" == "Default" ]]; then
+      open -a "$(find_claude_app)"
+      return 0
+    fi
+  fi
   adopt_strays
   launch_profile "$raw"
+}
+
+# ---- usage ------------------------------------------------------------------
+# The menu bar app fetches usage (it holds the cookie-decryption code) and
+# saves it after every refresh: usage.json for the widget and --json, and
+# usage.tsv for the shell. These commands only read that snapshot.
+
+USAGE_TSV="$APP_SUPPORT/claude-desktop-profiles/usage.tsv"
+USAGE_JSON="$APP_SUPPORT/claude-desktop-profiles/usage.json"
+
+# Prints each profile as one tab-joined record without its header line; fields:
+# name color running 5h% 5h-reset 7d% 7d-reset error (empty = unknown).
+usage_records() {
+  [[ -f "$USAGE_TSV" ]] || return 1
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" != \#* ]] && print -r -- "$line"
+  done < "$USAGE_TSV"
+}
+
+# Age of the snapshot in seconds.
+usage_age() {
+  zmodload -F zsh/datetime p:EPOCHSECONDS
+  local updated
+  updated=$(sed -n 's/^# updated //p' "$USAGE_TSV" 2>/dev/null)
+  print -- $(( EPOCHSECONDS - ${updated:-0} ))
+}
+
+# The profile with the most 5-hour headroom (weekly as tie-breaker); one whose
+# weekly limit is used up only wins if every one is. Same rule as the app.
+best_profile() {
+  local rec best="" fallback="" bh=1000 bw=1000 fh=1000 fw=1000 h w
+  local -a f
+  for rec in "${(@f)$(usage_records)}"; do
+    [[ -n "$rec" ]] || continue
+    f=("${(@ps:\t:)rec}")
+    [[ -n "${f[4]:-}" && -z "${f[8]:-}" ]] || continue
+    h=${f[4]} w=${f[6]:-0}
+    if (( w < 100 )); then
+      if (( h < bh || (h == bh && w < bw) )); then best=${f[1]} bh=$h bw=$w; fi
+    elif (( h < fh || (h == fh && w < fw) )); then
+      fallback=${f[1]} fh=$h fw=$w
+    fi
+  done
+  best=${best:-$fallback}
+  [[ -n "$best" ]] || return 1
+  (( $(usage_age) < 3600 )) || warn "Usage data is over an hour old; is the Claude Profiles app running?"
+  print -- "$best"
+}
+
+# "in 2h 10m" within a day, "Mon 09:30" beyond that, "" if unknown or past.
+fmt_reset() {
+  zmodload -F zsh/datetime p:EPOCHSECONDS b:strftime
+  local t="${1:-}" secs
+  [[ -n "$t" ]] || return 0
+  secs=$(( t - EPOCHSECONDS ))
+  (( secs > 0 )) || return 0
+  if (( secs < 86400 )); then
+    local h=$(( secs / 3600 )) m=$(( (secs % 3600 + 59) / 60 ))
+    (( m == 60 )) && { h=$(( h + 1 )); m=0; }
+    if (( h == 0 )); then print -- "in ${m}m"; else print -- "in ${h}h ${m}m"; fi
+  else
+    strftime "%a %H:%M" "$t"
+  fi
+}
+
+cmd_usage() {
+  [[ -f "$USAGE_TSV" ]] ||
+    err "No usage data yet. Open the Claude Profiles app (menu bar): it loads usage and saves it for cdp."
+  if [[ "${1:-}" == "--json" ]]; then
+    cat "$USAGE_JSON"
+    return 0
+  fi
+  local rec mark five week
+  local -a f
+  printf "  %-14s %5s  %-12s %5s  %-12s\n" PROFILE 5H RESETS WEEK RESETS
+  for rec in "${(@f)$(usage_records)}"; do
+    [[ -n "$rec" ]] || continue
+    f=("${(@ps:\t:)rec}")
+    [[ "${f[3]:-}" == 1 ]] && mark="●" || mark=" "
+    if [[ -n "${f[8]:-}" ]]; then
+      printf "%s %-14s %s\n" "$mark" "${f[1]}" "${f[8]}"
+      continue
+    fi
+    five=${f[4]:+${f[4]}%} week=${f[6]:+${f[6]}%}
+    printf "%s %-14s %5s  %-12s %5s  %-12s\n" "$mark" "${f[1]}" "${five:-—}" "$(fmt_reset "${f[5]:-}")" \
+      "${week:-—}" "$(fmt_reset "${f[7]:-}")"
+  done
+  local age; age=$(usage_age)
+  print
+  if (( age > 1800 )); then
+    warn "Updated $(( age / 60 )) min ago; is the Claude Profiles app running?"
+  else
+    info "● running · updated $(( age / 60 )) min ago by the Claude Profiles app"
+  fi
 }
 
 cmd_watch() {
@@ -905,14 +1009,17 @@ build_manager_app() {
   command -v swiftc >/dev/null 2>&1 ||
     err "swiftc not found. Install Xcode Command Line Tools (xcode-select --install), or use 'cdp chooser' for the dialog-based picker."
   local src="${SCRIPT_PATH:h:h}/app/ClaudeProfiles.swift"
-  [[ -f "$src" ]] ||
-    err "GUI source not found at $src — run cdp from a repo checkout to build the GUI."
+  local shared="${SCRIPT_PATH:h:h}/app/Shared.swift" widget="${SCRIPT_PATH:h:h}/app/Widget.swift"
+  [[ -f "$src" && -f "$shared" && -f "$widget" ]] ||
+    err "GUI source not found at ${src:h} — run cdp from a repo checkout to build the GUI."
 
   rm -rf "$bundle"
   mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
   info "Compiling ClaudeProfiles.swift (first build can take ~30s)…"
-  swift_compile "$bundle/Contents/MacOS/ClaudeProfiles" -parse-as-library "$src" ||
+  swift_compile "$bundle/Contents/MacOS/ClaudeProfiles" -parse-as-library "$src" "$shared" ||
     err "Compiling ClaudeProfiles.swift failed."
+  build_widget "$bundle/Contents/PlugIns/ClaudeProfilesWidget.appex" "$widget" "$shared" ||
+    err "Compiling the widget failed."
   build_helper "$bundle/Contents/Resources/$HELPER_NAME.app" || err "Compiling the helper failed."
 
   cat > "$bundle/Contents/Info.plist" <<EOF
@@ -937,6 +1044,10 @@ build_manager_app() {
 			<key>CFBundleURLName</key><string>Claude links</string>
 			<key>CFBundleURLSchemes</key><array><string>claude</string></array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key><string>Claude Profiles</string>
+			<key>CFBundleURLSchemes</key><array><string>claude-profiles</string></array>
+		</dict>
 	</array>
 </dict>
 </plist>
@@ -950,6 +1061,57 @@ EOF
   /usr/bin/codesign --force --sign - "$bundle/Contents/Resources/$HELPER_NAME.app"
 
   /usr/bin/codesign --force --sign - "$bundle"
+}
+
+# The WidgetKit extension (macOS 14+). Sandboxed, as extensions must be, with
+# one read-only exception: the folder where the app writes usage.json.
+build_widget() {
+  local appex="$1" src="$2" shared="$3" tmp
+  mkdir -p "$appex/Contents/MacOS"
+  # Entry point NSExtensionMain, as Xcode links extensions: it sets up the
+  # XPC service and then runs the @main widget. Entering at Swift's main
+  # instead skips that and ExtensionFoundation traps on launch.
+  CDP_MIN_MACOS=14.0 swift_compile "$appex/Contents/MacOS/ClaudeProfilesWidget" \
+    -parse-as-library -application-extension -Xlinker -e -Xlinker _NSExtensionMain \
+    "$src" "$shared" || return 1
+  cat > "$appex/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key><string>ClaudeProfilesWidget</string>
+	<key>CFBundleDisplayName</key><string>$CHOOSER_NAME</string>
+	<key>CFBundleIdentifier</key><string>$BUNDLE_PREFIX.gui.widget</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+	<key>CFBundleExecutable</key><string>ClaudeProfilesWidget</string>
+	<key>CFBundlePackageType</key><string>XPC!</string>
+	<key>CFBundleShortVersionString</key><string>$CDP_VERSION</string>
+	<key>CFBundleVersion</key><string>$CDP_VERSION</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>
+EOF
+  tmp=$(mktemp)
+  cat > "$tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key><true/>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array><string>/Library/Application Support/claude-desktop-profiles/</string></array>
+</dict>
+</plist>
+EOF
+  /usr/bin/codesign --force --sign - --entitlements "$tmp" "$appex"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
 }
 
 cmd_gui() {
@@ -1053,6 +1215,9 @@ USAGE
                       Runs from a per-profile Claude.app clone, so the Dock
                       tile wears the profile color and owns the window, with
                       its own Claude Code config dir (CLAUDE_CONFIG_DIR)
+  cdp launch --best   Launch the profile with the most 5-hour headroom
+  cdp usage [--json]  5-hour and weekly usage per profile, with reset times
+                      (as last loaded by the Claude Profiles menu bar app)
   cdp watchdog [install|uninstall|status]
                       LaunchAgent that re-homes a clone relaunched without
                       its profile (Claude's self-update does that). Installed
@@ -1089,6 +1254,7 @@ case "${1:-help}" in
   watchdog) shift; cmd_watchdog "$@" ;;
   color)   shift; cmd_color "$@" ;;
   list)    cmd_list ;;
+  usage)   shift; cmd_usage "$@" ;;
   remove)  shift; cmd_remove "$@" ;;
   gui)     cmd_gui ;;
   chooser) shift; cmd_chooser "$@" ;;

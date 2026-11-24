@@ -31,6 +31,11 @@ fi
 universal() { [[ "$(lipo -archs "$1")" == *arm64* && "$(lipo -archs "$1")" == *x86_64* ]] }
 check "app binary is universal" universal "$APP/Contents/MacOS/ClaudeProfiles"
 check "helper binary is universal" universal "$APP/$HELPER_REL"
+WIDGET="$APP/Contents/PlugIns/ClaudeProfilesWidget.appex"
+check "widget binary is universal" universal "$WIDGET/Contents/MacOS/ClaudeProfilesWidget"
+check "widget is a WidgetKit extension" test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$WIDGET/Contents/Info.plist")" = com.apple.widgetkit-extension
+check "widget enters at NSExtensionMain" sh -c '"$1" 2>&1 | grep -q "XPC Service cannot be run directly"' _ "$WIDGET/Contents/MacOS/ClaudeProfilesWidget"
+check "widget is sandboxed" sh -c 'codesign -d --entitlements - "$1" 2>/dev/null | grep -q com.apple.security.app-sandbox' _ "$WIDGET"
 check "signature verifies" codesign --verify --deep --strict "$APP"
 check "Info.plist version is $version" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$version"
 check "bundled cdp is bin/cdp" cmp bin/cdp "$APP/Contents/Resources/cdp"
