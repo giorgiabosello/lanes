@@ -25,7 +25,7 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-CDP_VERSION="0.4.3"
+CDP_VERSION="0.5.0"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
@@ -627,9 +627,10 @@ cmd_add() {
   info "Launcher:     $app_path  (Spotlight: 'Claude $display')"
   if (( ! existed )); then
     print
-    info "First launch: QUIT every other Claude window first (the claude:// login"
-    info "deep link lands on whichever instance is running), open the launcher,"
-    info "sign in, done. After that all profiles can run simultaneously."
+    info "First launch: with the Claude Profiles app running, just open the launcher"
+    info "and sign in; it sends the claude:// login link to the right profile. Without"
+    info "it, QUIT every other Claude window first (the link lands on whichever"
+    info "instance is running). After that all profiles can run simultaneously."
   fi
 
   install_watchdog --quiet
@@ -706,7 +707,7 @@ on addProfile()
 		display alert "Could not create profile" message msg as critical
 		return
 	end try
-	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running." with title "Add Claude profile" buttons {"OK"} default button "OK"
+	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running. (The Claude Profiles menu bar app routes it to the right profile instead.)" with title "Add Claude profile" buttons {"OK"} default button "OK"
 end addProfile
 
 on removeProfile(appSupport)
@@ -930,6 +931,13 @@ build_manager_app() {
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSUIElement</key><true/>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key><string>Claude links</string>
+			<key>CFBundleURLSchemes</key><array><string>claude</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>
 EOF

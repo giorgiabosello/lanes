@@ -333,6 +333,10 @@ struct Profile: Identifiable, Hashable {
 }
 
 final class ProfileStore: ObservableObject {
+    // One instance: the app delegate routes claude:// links into it, and those
+    // can arrive before any scene exists (the link is what launched the app).
+    static let shared = ProfileStore()
+
     @Published var profiles: [Profile] = [Profile(name: "Default", dataDir: nil, colorName: "orange")]
     @Published var running: Set<String> = []
     @Published var errorMessage: String?
@@ -385,11 +389,15 @@ final class ProfileStore: ObservableObject {
     private var usageTimer: Timer?
     init() {
         refresh()
-        timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshRunning() }]
+        timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.refreshRunning()
+            self?.claimLinksIfNeeded()
+        }]
         scheduleUsageTimer()
         if alertsEnabled { Notifier.shared.setUp() }
         GlobalShortcut.setEnabled(shortcutEnabled)
         refreshUsage()
+        startLinkRouting()
     }
 
     private func scheduleUsageTimer() {
@@ -572,6 +580,176 @@ final class ProfileStore: ObservableObject {
         let dir = p.dataDir ?? (appSupport + "/Claude")
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
     }
+
+    // MARK: claude:// link routing
+    //
+    // macOS hands a claude:// link (the sign-in token, "open in app" links)
+    // to whichever Claude is running, since every clone shares one bundle id.
+    // When routing is on, this app is the scheme's default handler instead and
+    // forwards each link to one profile: NSWorkspace.open(_:withApplicationAt:)
+    // with that profile's clone delivers it to the running instance of exactly
+    // that bundle. Claude re-registers itself as the handler on every launch,
+    // so the 2 s poller claims it back.
+
+    @Published var routeLinks = UserDefaults.standard.object(forKey: "routeLinks") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(routeLinks, forKey: "routeLinks")
+            lastClaim = nil
+            if routeLinks { claimLinksIfNeeded() } else { releaseLinks() }
+        }
+    }
+    // The profile whose Claude window was frontmost most recently: the one
+    // that just opened the browser to sign in, so it's the picker's default.
+    private var lastActive: String?
+    private var lastClaim: Date?
+    private var activationObserver: NSObjectProtocol?
+    private static let claudeBundleID = "com.anthropic.claudefordesktop"
+    private static let probeURL = URL(string: "claude://")!
+
+    func bundlePath(for p: Profile) -> String {
+        p.isDefault ? claudeAppPath : clonesDir + "/Claude \(p.name).app"
+    }
+
+    private func profileID(forBundle url: URL?) -> String? {
+        guard let path = url?.standardizedFileURL.path else { return nil }
+        return profiles.first { URL(fileURLWithPath: bundlePath(for: $0)).standardizedFileURL.path == path }?.id
+    }
+
+    private func runningApp(for p: Profile) -> NSRunningApplication? {
+        let want = URL(fileURLWithPath: bundlePath(for: p)).standardizedFileURL.path
+        return NSWorkspace.shared.runningApplications.first {
+            $0.bundleIdentifier == Self.claudeBundleID && $0.bundleURL?.standardizedFileURL.path == want
+        }
+    }
+
+    func startLinkRouting() {
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == Self.claudeBundleID,
+                  let id = self.profileID(forBundle: app.bundleURL) else { return }
+            self.lastActive = id
+        }
+        claimLinksIfNeeded()
+    }
+
+    // Cheap enough for the 2 s poller: one LaunchServices lookup, and a write
+    // only when Claude took the scheme back (throttled in case it fails).
+    func claimLinksIfNeeded() {
+        guard routeLinks, !Bundle.main.bundlePath.contains("/AppTranslocation/") else { return }
+        // Compared by bundle id, the key LaunchServices stores the default
+        // under: with a second copy installed it may resolve to that path.
+        let me = Bundle.main.bundleURL.standardizedFileURL
+        if let cur = NSWorkspace.shared.urlForApplication(toOpen: Self.probeURL),
+           Bundle(url: cur)?.bundleIdentifier == Bundle.main.bundleIdentifier { return }
+        if let t = lastClaim, Date().timeIntervalSince(t) < 10 { return }
+        lastClaim = Date()
+        NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "claude") { _ in }
+    }
+
+    private func releaseLinks() {
+        NSWorkspace.shared.setDefaultApplication(at: URL(fileURLWithPath: claudeAppPath),
+                                                 toOpenURLsWithScheme: "claude") { _ in }
+    }
+
+    func route(_ url: URL) {
+        refresh()
+        let live = profiles.filter { running.contains($0.id) }
+        if live.count == 1 { deliver(url, to: live[0]); return }
+        // None running: pick which to start. Several: the frontmost-most-recently
+        // one is preselected, so Return confirms the usual case.
+        let preselect = live.first { $0.id == lastActive }?.id ?? live.first?.id ?? profiles.first?.id
+        if let p = pickProfile(for: url, preselect: preselect) { deliver(url, to: p) }
+    }
+
+    private func pickProfile(for url: URL, preselect: String?) -> Profile? {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Open this Claude link in which profile?"
+        // Never show the query: a sign-in link carries its token there.
+        let where_ = [url.host, url.path.isEmpty ? nil : url.path].compactMap { $0 }.joined()
+        alert.informativeText = (where_.isEmpty ? "" : "claude://\(where_)\n\n")
+            + "Sign-in links belong to the profile you clicked \"Log in\" in."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
+        for p in profiles {
+            let item = NSMenuItem(title: p.name + (running.contains(p.id) ? "" : "  (not running)"),
+                                  action: nil, keyEquivalent: "")
+            item.representedObject = p.id
+            item.image = Self.swatchImage(NSColor(p.color.swatch))
+            popup.menu?.addItem(item)
+            if p.id == preselect { popup.select(item) }
+        }
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let id = popup.selectedItem?.representedObject as? String else { return nil }
+        return profiles.first { $0.id == id }
+    }
+
+    private static func swatchImage(_ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 10, height: 10), flipped: false) { r in
+            color.setFill()
+            NSBezierPath(ovalIn: r).fill()
+            return true
+        }
+    }
+
+    private func deliver(_ url: URL, to p: Profile) {
+        lastActive = p.id
+        if p.isDefault || running.contains(p.id) && runningApp(for: p) != nil {
+            open(url, in: p)
+            return
+        }
+        // Never open a link with a clone that isn't running: LaunchServices
+        // would start it without --user-data-dir, on the DEFAULT account. Start
+        // it isolated through cdp, then forward once both ps (the flag) and
+        // LaunchServices (the bundle) see it, so the link can't spawn a copy.
+        guard let cdp = cdpPath else { linkFailed("The bundled cdp script is missing from the app."); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failure: String?
+            do { try runTool("/bin/zsh", [cdp, "launch", p.name], env: ["CDP_FROM_CHOOSER": "1"]) }
+            catch { failure = error.localizedDescription }
+            DispatchQueue.main.async {
+                if let failure { self.linkFailed(failure); return }
+                self.waitForLaunch(of: p, deadline: Date().addingTimeInterval(30)) { self.open(url, in: p) }
+            }
+        }
+    }
+
+    private func waitForLaunch(of p: Profile, deadline: Date, then: @escaping () -> Void) {
+        refreshRunning()
+        if running.contains(p.id), runningApp(for: p) != nil {
+            // Electron queues open-url until it's ready, but give LaunchServices
+            // a beat to finish the check-in it just reported.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: then)
+        } else if Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.waitForLaunch(of: p, deadline: deadline, then: then) }
+        } else {
+            linkFailed("\(p.name) didn't start in time, so the Claude link wasn't opened. Click it again.")
+        }
+    }
+
+    // The window (and its error alert) is usually closed while routing.
+    private func linkFailed(_ message: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't open the Claude link"
+        alert.informativeText = message
+        alert.runModal()
+    }
+
+    private func open(_ url: URL, in p: Profile) {
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: bundlePath(for: p)),
+                                configuration: cfg) { _, error in
+            if let error { DispatchQueue.main.async { self.linkFailed(error.localizedDescription) } }
+        }
+    }
 }
 
 // MARK: - App
@@ -580,6 +758,22 @@ final class ProfileStore: ObservableObject {
 // utility surface for adding/removing profiles. Opening the app again (Spotlight,
 // Finder) pops the menu bar panel instead of a window.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // Our own GetURL handler rather than SwiftUI's onOpenURL, which would also
+    // bring up the window scene. Installed before launch finishes so the link
+    // that cold-starts the app isn't dropped.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURL(_:reply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    @objc func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+              let url = URL(string: s), url.scheme?.lowercased() == "claude" else { return }
+        // Let the Apple Event return before the (modal) picker runs.
+        DispatchQueue.main.async { ProfileStore.shared.route(url) }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { GlobalShortcut.togglePanel() }
         return flag
@@ -589,7 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ClaudeProfilesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var store = ProfileStore()
+    @StateObject private var store = ProfileStore.shared
 
     var body: some Scene {
         // Window (not WindowGroup): openWindow from the menu bar must reuse it.
@@ -737,6 +931,7 @@ struct MenuContent: View {
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin },
                                                     set: { store.setLaunchAtLogin($0) }))
             Toggle("Shortcut ⌥⌘P opens this panel", isOn: $store.shortcutEnabled)
+            Toggle("Send claude:// links to the right profile", isOn: $store.routeLinks)
             Menu("Refresh usage every") {
                 Picker("Refresh usage every", selection: $store.usageInterval) {
                     ForEach([60.0, 120, 300, 600, 900], id: \.self) { Text("\(Int($0 / 60)) min").tag($0) }

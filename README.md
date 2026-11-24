@@ -38,12 +38,17 @@ You do this once per version; from then on it opens like any other app.
 **4. Create a profile.** Click **New Profile**, give it a name and a color. It
 shows up in Spotlight as "Claude <Name>".
 
-**5. Sign in — read this once.** Claude's login hands the auth token over a
-`claude://` link, and macOS sends that link to **whichever Claude is running**.
-The first time you open a new profile, quit every other Claude window (⌘Q), then
-open the profile and sign in. After that, all profiles run at the same time. If
-the token ever lands on the wrong instance, no data is lost: sign that instance
-back into its own account.
+**5. Sign in.** Open the profile and log in. Claude's login hands the auth
+token back over a `claude://` link; Claude Profiles catches that link and sends
+it to the right profile — the one running, or, with several running, the one you
+pick (the window you clicked "Log in" in is preselected). All profiles can stay
+open while you do it.
+
+> Turned off "Send claude:// links to the right profile" in the gear menu, or
+> Claude Profiles isn't running? Then macOS sends the link to **whichever Claude
+> is running**: quit every other Claude window (⌘Q) before a profile's first
+> sign-in. If the token ever lands on the wrong instance, no data is lost: sign
+> that instance back into its own account.
 
 ### What you need
 
@@ -75,6 +80,13 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
   refresh interval. Opening Claude Profiles again from Spotlight pops the panel;
   the window (New Profile…, Open Claude Profiles) is only used to add and remove
   profiles.
+- **`claude://` links go to the right profile**: sign-in tokens and "open in
+  the desktop app" links. With one Claude running it gets the link; with
+  several (or none) a picker asks, preselecting the window you used last. A
+  profile that isn't running is started isolated first, never on the default
+  account. Claude re-registers itself as the link handler each time it starts,
+  so the menu bar app takes it back within a couple of seconds; turn it off in
+  the gear menu to hand links back to Claude.
 - **A CLI (`cdp`)** for scripting, shipped inside the app.
 
 ![Colored Dock tiles for running profiles](docs/dock.png)
@@ -157,6 +169,16 @@ macOS experience.
   revert the update and trap the app re-downloading it forever), and, once
   the default catches up to the same version, re-clones once to reclaim APFS
   block-sharing and restore the profile color a self-update wipes.
+- **Link routing**: the menu bar app declares the `claude` scheme and makes
+  itself its default handler (Claude claims it back on every launch, so a
+  2 s check re-claims it). A link is forwarded with
+  `NSWorkspace.open(_:withApplicationAt:)` pointed at the profile's clone:
+  LaunchServices delivers it to the running process of exactly that bundle
+  path, though every clone shares Claude's bundle id. It is only ever sent to
+  a clone that is already running isolated — opening a link with a stopped
+  clone would start it bare, on the default account — so a stopped profile is
+  started through `cdp launch` first. Link contents are never logged or shown
+  (the sign-in token is in the query).
 - **Focusing**: if the profile is already running, `cdp launch` activates
   its PID via `NSRunningApplication` instead of re-launching — Claude's
   second-instance handler would otherwise open a new window per click.
