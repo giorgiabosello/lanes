@@ -69,6 +69,8 @@ Spotlight shows one copy. Profiles, launchers and colors are kept.
   launch/focus, color, and add/remove.
 - **Profiles update themselves**: each one installs Claude's updates on its own
   schedule, and a watchdog puts it back on its profile when an update relaunches it.
+- **A menu bar item**: each profile's 5-hour and weekly usage at a glance, click
+  a profile to launch or focus it, and add a new one without opening the window.
 - **A CLI (`cdp`)** for scripting, shipped inside the app.
 
 ![Colored Dock tiles for running profiles](docs/dock.png)
@@ -99,7 +101,9 @@ The window, the launchers and the CLI all run the same `cdp` script.
 
 ## Data and privacy
 
-- No telemetry, no network calls. About 1,700 lines of shell and Swift you can
+- No telemetry. The only network calls are the menu bar's usage checks to
+  claude.ai, made with each profile's own session (read from its cookie jar,
+  never stored or sent elsewhere). About 1,900 lines of shell and Swift you can
   read in one sitting.
 - A profile is a folder: `~/Library/Application Support/Claude-<Name>`. Its
   Claude Code config lives in `<profile>/claude-config`.

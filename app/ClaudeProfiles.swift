@@ -11,6 +11,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import CommonCrypto
 
 // MARK: - Shared helpers
 
@@ -71,6 +72,115 @@ func runTool(_ tool: String, _ args: [String], env: [String: String] = [:]) thro
     return out
 }
 
+// MARK: - Usage (claude.ai)
+
+// Reads the same numbers as Settings > Usage by calling claude.ai with the
+// profile's own session cookies, decrypted from its Electron cookie jar.
+// shortcut: undocumented endpoint, may change without notice; the cookies are
+// only read, never stored, and only sent to claude.ai.
+struct Usage: Equatable {
+    var fiveHour: Double?   // percent of the 5-hour limit used
+    var sevenDay: Double?   // percent of the weekly limit used
+    var error: String?
+    var summary: String {
+        if let error { return error }
+        func pct(_ v: Double?) -> String { v.map { "\(Int($0.rounded()))%" } ?? "—" }
+        return "5h \(pct(fiveHour)) · 7d \(pct(sevenDay))"
+    }
+}
+
+private func chromiumKey() throws -> Data {
+    // Same Keychain item for every profile (clones share Claude's signature).
+    // macOS asks once; "Always Allow" makes it silent afterwards.
+    let pw = try runTool("/usr/bin/security", ["find-generic-password", "-w", "-s", "Claude Safe Storage"])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    var key = Data(count: 16)
+    let status = key.withUnsafeMutableBytes { k in
+        CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), pw, pw.utf8.count, Array("saltysalt".utf8), 9,
+                             CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1), 1003,
+                             k.bindMemory(to: UInt8.self).baseAddress, 16)
+    }
+    guard status == kCCSuccess else { throw usageError("key derivation failed") }
+    return key
+}
+
+private func decryptCookie(_ blob: Data, key: Data) -> String? {
+    guard blob.count > 3, blob.prefix(3) == Data("v10".utf8) else { return nil }
+    let body = blob.dropFirst(3)
+    var out = Data(count: body.count + kCCBlockSizeAES128)
+    var n = 0
+    let iv = [UInt8](repeating: 0x20, count: 16)
+    let outCap = out.count
+    let status = out.withUnsafeMutableBytes { o in
+        CCCrypt(CCOperation(kCCDecrypt), CCAlgorithm(kCCAlgorithmAES), CCOptions(kCCOptionPKCS7Padding),
+                [UInt8](key), 16, iv, [UInt8](body), body.count, o.baseAddress, outCap, &n)
+    }
+    guard status == kCCSuccess else { return nil }
+    let plain = out.prefix(n)
+    // Newer Chromium prepends a 32-byte host hash; random bytes are not valid UTF-8.
+    if let s = String(data: plain, encoding: .utf8) { return s }
+    return String(data: plain.dropFirst(32), encoding: .utf8)
+}
+
+private func usageError(_ m: String) -> NSError {
+    NSError(domain: "usage", code: 1, userInfo: [NSLocalizedDescriptionKey: m])
+}
+
+private func claudeCookieHeader(dataDir: String) throws -> String {
+    let fm = FileManager.default
+    guard let src = [dataDir + "/Network/Cookies", dataDir + "/Cookies"].first(where: fm.fileExists)
+    else { throw usageError("not signed in") }
+    // Copy first: Claude keeps the live database locked while it runs.
+    let tmp = NSTemporaryDirectory() + "cdp-cookies-\(UUID().uuidString)"
+    defer { for e in ["", "-wal", "-journal"] { try? fm.removeItem(atPath: tmp + e) } }
+    for e in ["", "-wal", "-journal"] where fm.fileExists(atPath: src + e) { try fm.copyItem(atPath: src + e, toPath: tmp + e) }
+    let rows = try runTool("/usr/bin/sqlite3", [tmp, "SELECT name || '|' || hex(encrypted_value) FROM cookies WHERE host_key LIKE '%claude.ai'"])
+    let key = try chromiumKey()
+    var pairs: [String] = []
+    for row in rows.split(separator: "\n") {
+        let f = row.split(separator: "|", maxSplits: 1).map(String.init)
+        guard f.count == 2, let blob = Data(hexString: f[1]), let v = decryptCookie(blob, key: key) else { continue }
+        pairs.append("\(f[0])=\(v)")
+    }
+    guard pairs.contains(where: { $0.hasPrefix("sessionKey=") }) else { throw usageError("not signed in") }
+    return pairs.joined(separator: "; ")
+}
+
+private extension Data {
+    init?(hexString h: String) {
+        guard h.count % 2 == 0 else { return nil }
+        var d = Data(), i = h.startIndex
+        while i < h.endIndex {
+            let j = h.index(i, offsetBy: 2)
+            guard let b = UInt8(h[i..<j], radix: 16) else { return nil }
+            d.append(b); i = j
+        }
+        self = d
+    }
+}
+
+func fetchUsage(dataDir: String) async throws -> Usage {
+    let cookie = try claudeCookieHeader(dataDir: dataDir)
+    func get(_ path: String) async throws -> Any {
+        var r = URLRequest(url: URL(string: "https://claude.ai/api" + path)!)
+        r.setValue(cookie, forHTTPHeaderField: "Cookie")
+        r.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                   forHTTPHeaderField: "User-Agent")
+        r.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, resp) = try await URLSession.shared.data(for: r)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw usageError(code == 401 || code == 403 ? "session expired" : "HTTP \(code)") }
+        return try JSONSerialization.jsonObject(with: data)
+    }
+    guard let orgs = try await get("/organizations") as? [[String: Any]],
+          let org = orgs.first?["uuid"] as? String
+    else { throw usageError("no organization") }
+    guard let j = try await get("/organizations/\(org)/usage") as? [String: Any]
+    else { throw usageError("unexpected response") }
+    func pct(_ k: String) -> Double? { (j[k] as? [String: Any])?["utilization"] as? Double }
+    return Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"), error: nil)
+}
+
 // MARK: - Model
 
 // Mirrors the HUES palette in bin/cdp — names must stay in sync.
@@ -114,6 +224,31 @@ final class ProfileStore: ObservableObject {
     // profiles whose clone is behind it. Drives the update banner.
     @Published var installedVersion: String = ""
     @Published var outdatedProfiles: [String] = []
+    @Published var showAdd = false                 // set from the menu bar, shown by the window
+    @Published var usage: [String: Usage] = [:]    // keyed by Profile.id
+
+    // Owned by the store (not a view) so the menu bar stays live with the window closed.
+    private var timers: [Timer] = []
+    init() {
+        refresh()
+        timers = [
+            Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshRunning() },
+            Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.refreshUsage() },
+        ]
+        refreshUsage()
+    }
+
+    func refreshUsage() {
+        let targets = profiles.map { ($0.id, $0.dataDir ?? appSupport + "/Claude") }
+        Task.detached {
+            for (id, dir) in targets {
+                let u: Usage
+                do { u = try await fetchUsage(dataDir: dir) }
+                catch { u = Usage(fiveHour: nil, sevenDay: nil, error: error.localizedDescription) }
+                await MainActor.run { self.usage[id] = u }
+            }
+        }
+    }
 
     private let appSupport = NSHomeDirectory() + "/Library/Application Support"
     private let clonesDir = NSHomeDirectory() + "/Library/Application Support/claude-desktop-profiles/apps"
@@ -246,23 +381,58 @@ final class ProfileStore: ObservableObject {
 
 @main
 struct ClaudeProfilesApp: App {
+    @StateObject private var store = ProfileStore()
+
     var body: some Scene {
-        WindowGroup("Claude Profiles") {
-            ContentView()
+        // Window (not WindowGroup): openWindow from the menu bar must reuse it.
+        Window("Claude Profiles", id: "main") {
+            ContentView(store: store)
         }
         .windowResizability(.contentSize)
+
+        MenuBarExtra {
+            MenuContent(store: store)
+        } label: {
+            let top = store.usage.values.compactMap(\.fiveHour).max()
+            Image(systemName: "gauge.with.needle")
+            if let top { Text("\(Int(top.rounded()))%") }
+        }
+    }
+}
+
+struct MenuContent: View {
+    @ObservedObject var store: ProfileStore
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        ForEach(store.profiles) { p in
+            let running = store.running.contains(p.id)
+            // launch() focuses an already-running instance instead of opening another.
+            Button("\(running ? "●" : "○") \(p.name)   \(store.usage[p.id]?.summary ?? "…")") { store.launch(p) }
+        }
+        Divider()
+        Button("New Profile…") {
+            store.showAdd = true
+            showWindow()
+        }
+        Button("Open Claude Profiles") { showWindow() }
+        Button("Refresh Usage") { store.refresh(); store.refreshUsage() }
+        Divider()
+        Button("Quit") { NSApp.terminate(nil) }
+    }
+
+    private func showWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "main")
     }
 }
 
 // MARK: - Views
 
 struct ContentView: View {
-    @StateObject private var store = ProfileStore()
-    @State private var showAdd = false
+    @ObservedObject var store: ProfileStore
     @State private var removing: Profile?
     @State private var confirmWipe: Profile?
-    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
-
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 180), spacing: 14)]
 
     var body: some View {
@@ -282,16 +452,15 @@ struct ContentView: View {
                             remove: p.isDefault ? nil : { removing = p }
                         )
                     }
-                    AddCard { showAdd = true }
+                    AddCard { store.showAdd = true }
                 }
                 .padding(20)
             }
         }
         .frame(minWidth: 580, idealWidth: 640, minHeight: 380, idealHeight: 420)
         .background(WindowBackground())
-        .onAppear { store.refresh(); store.setUp() }
-        .onReceive(timer) { _ in store.refreshRunning() }
-        .sheet(isPresented: $showAdd) {
+        .onAppear { store.setUp() }
+        .sheet(isPresented: $store.showAdd) {
             AddSheet { name, color in store.add(name, color: color) }
         }
         .confirmationDialog(
@@ -341,7 +510,7 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                showAdd = true
+                store.showAdd = true
             } label: {
                 Label("New Profile", systemImage: "plus")
             }
