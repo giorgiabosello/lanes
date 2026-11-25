@@ -1,6 +1,10 @@
 // Lanes for Claude — a menu bar app for running several Claude Desktop
 // accounts side by side.
 //
+// This file holds the model: usage fetching, system integrations, the
+// profile store and the app's scenes. The views live in Window.swift,
+// MenuBar.swift, Settings.swift and Components.swift.
+//
 // This app is a frontend only: profile creation and removal shell out to the
 // copy of `lanes` bundled in Resources, so the CLI, the AppleScript chooser,
 // and this app share one implementation. Profiles are discovered from the
@@ -26,7 +30,8 @@ let claudeAppPath: String = {
     return candidates.first { FileManager.default.fileExists(atPath: $0) } ?? candidates[0]
 }()
 
-var claudeIcon: NSImage { NSWorkspace.shared.icon(forFile: claudeAppPath) }
+// Read once: every lane, sheet and preview draws it, tinted per profile.
+let claudeIcon: NSImage = NSWorkspace.shared.icon(forFile: claudeAppPath)
 
 // Read fresh every call (NOT via Bundle(path:), which caches infoDictionary
 // and would miss a re-clone). Returns nil if the bundle/plist is absent.
@@ -105,6 +110,8 @@ func resetText(_ date: Date?) -> String? {
         return m == 0 ? "resets in \(h)h" : "resets in \(h)h \(m)m"
     }
     let f = DateFormatter()
+    // English day names, like the rest of the app, whatever the system locale.
+    f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "EEE HH:mm"
     return "resets " + f.string(from: date)
 }
@@ -394,7 +401,13 @@ final class ProfileStore: ObservableObject {
     // Owned by the store (not a view) so the menu bar stays live with the window closed.
     private var timers: [Timer] = []
     private var usageTimer: Timer?
-    init() {
+    // A non-live store (the screenshot renderer) holds sample data and never
+    // touches processes, the network, hotkeys or link handling.
+    let live: Bool
+
+    init(live: Bool = true) {
+        self.live = live
+        guard live else { return }
         refresh()
         timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.refreshRunning()
@@ -422,7 +435,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func refreshUsage() {
-        guard !isRefreshingUsage else { return }
+        guard live, !isRefreshingUsage else { return }
         isRefreshingUsage = true
         let targets = profiles.map { ($0.id, $0.dataDir ?? appSupport + "/Claude") }
         Task.detached {
@@ -529,6 +542,30 @@ final class ProfileStore: ObservableObject {
         return (usable.isEmpty ? scored : usable).min { ($0.1, $0.2) < ($1.1, $1.2) }?.0
     }
 
+    // The best profile, but only when there's a real choice: two or more
+    // profiles with usage numbers. Drives the "most room" callouts.
+    func roomiestProfile() -> Profile? {
+        let withData = profiles.filter { usage[$0.id]?.fiveHour != nil && usage[$0.id]?.error == nil }
+        return withData.count >= 2 ? bestProfile() : nil
+    }
+
+    // "3 profiles · 1 running · most room in Work (92% left)"
+    var summary: String {
+        let n = profiles.count, r = running.count
+        var parts = ["\(n) profile\(n == 1 ? "" : "s")", r == 0 ? "none running" : "\(r) running"]
+        if let b = roomiestProfile(), let h = usage[b.id]?.fiveHour {
+            parts.append("most room in \(b.name) (\(max(0, 100 - Int(h.rounded())))% left)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // The Claude version a profile runs: its own clone, or the installed app.
+    func claudeVersion(of p: Profile) -> String? {
+        bundleVersion(bundlePath(for: p))
+    }
+
+    func dataPath(of p: Profile) -> String { p.dataDir ?? appSupport + "/Claude" }
+
     func launchBest() {
         if let p = bestProfile() {
             launch(p)
@@ -544,6 +581,7 @@ final class ProfileStore: ObservableObject {
     private var scriptPath: String? { Bundle.main.path(forResource: "lanes", ofType: nil) }
 
     func refresh() {
+        guard live else { return }
         var list = [Profile(name: "Default", dataDir: nil, colorName: "orange")]
         let fm = FileManager.default
         if let entries = try? fm.contentsOfDirectory(atPath: profilesDir) {
@@ -564,7 +602,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func refreshRunning() {
-        guard let out = try? runTool("/bin/ps", ["-axo", "command"]) else { return }
+        guard live, let out = try? runTool("/bin/ps", ["-axo", "command"]) else { return }
         var found = Set<String>()
         for lineSub in out.split(separator: "\n") {
             let line = String(lineSub)
@@ -635,7 +673,7 @@ final class ProfileStore: ObservableObject {
     // A new version's first launch points launchers, watchdog and helper at
     // this app's lanes. Off the main thread: rebuilding launchers takes seconds.
     func setUp() {
-        guard let lanes = scriptPath else { return }
+        guard live, let lanes = scriptPath else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             var failure: String?
             do { try runTool("/bin/zsh", [lanes, "setup", "--if-needed"], env: ["LANES_FROM_CHOOSER": "1"]) }
@@ -661,8 +699,7 @@ final class ProfileStore: ObservableObject {
     }
 
     func revealData(_ p: Profile) {
-        let dir = p.dataDir ?? (appSupport + "/Claude")
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dataPath(of: p))
     }
 
     // MARK: claude:// link routing
@@ -879,7 +916,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// The screenshot renderer (scripts/snapshots.sh) compiles these sources with
+// its own entry point.
+#if !LANES_SNAPSHOT
 @main
+#endif
 struct LanesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = ProfileStore.shared
@@ -887,318 +928,23 @@ struct LanesApp: App {
     var body: some Scene {
         // Window (not WindowGroup): openWindow from the menu bar must reuse it.
         Window("Lanes", id: "main") {
-            ContentView(store: store)
+            LanesWindow(store: store)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 780, height: 540)
+
+        Window("Lanes Settings", id: "settings") {
+            SettingsView(store: store)
         }
         .windowResizability(.contentSize)
 
         MenuBarExtra {
-            MenuContent(store: store)
+            MenuPanel(store: store)
         } label: {
             MenuBarLabel(store: store)
         }
         .menuBarExtraStyle(.window)
-    }
-}
-
-struct MenuBarLabel: View {
-    @ObservedObject var store: ProfileStore
-
-    var body: some View {
-        let top = store.usage.values.compactMap(\.fiveHour).max()
-        if let img = menuBarImage(percent: top) {
-            Image(nsImage: img)
-        } else {
-            Image(systemName: "gauge.with.needle")
-        }
-    }
-
-    // Rendered to an image so it can be colored when a limit is close; plain
-    // levels stay a template image that follows the menu bar's light/dark tint.
-    @MainActor private func menuBarImage(percent: Double?) -> NSImage? {
-        let warn: Color? = percent.map { $0 >= 90 ? Color.red : ($0 >= 75 ? Color.orange : nil) } ?? nil
-        let name: String
-        switch percent ?? 0 {
-        case ..<17: name = "gauge.with.dots.needle.0percent"
-        case ..<42: name = "gauge.with.dots.needle.33percent"
-        case ..<59: name = "gauge.with.dots.needle.50percent"
-        case ..<84: name = "gauge.with.dots.needle.67percent"
-        default: name = "gauge.with.dots.needle.100percent"
-        }
-        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : "gauge.with.needle"
-        let view = HStack(spacing: 4) {
-            Image(systemName: symbol)
-            if let percent { Text("\(Int(percent.rounded()))%").monospacedDigit() }
-        }
-        .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(warn ?? Color.black)
-        .padding(.horizontal, 2)
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-        guard let img = renderer.nsImage else { return nil }
-        img.isTemplate = (warn == nil)
-        return img
-    }
-}
-
-struct MenuContent: View {
-    @ObservedObject var store: ProfileStore
-    @Environment(\.openWindow) private var openWindow
-
-    // The profile with the most 5-hour headroom, when the gap is worth pointing out.
-    private var mostFreeID: String? {
-        let vals = store.profiles.compactMap { p -> (String, Double)? in
-            guard let v = store.usage[p.id]?.fiveHour else { return nil }
-            return (p.id, v)
-        }
-        guard vals.count >= 2, let lo = vals.min(by: { $0.1 < $1.1 }),
-              let hi = vals.max(by: { $0.1 < $1.1 }), hi.1 - lo.1 >= 15 else { return nil }
-        return lo.0
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-
-            VStack(spacing: 2) {
-                ForEach(store.profiles) { p in
-                    MenuProfileRow(
-                        profile: p,
-                        isRunning: store.running.contains(p.id),
-                        usage: store.usage[p.id],
-                        isMostFree: p.id == mostFreeID,
-                        history: store.history[p.name] ?? [],
-                        launch: { store.launch(p); closePanel() },
-                        reveal: { store.revealData(p) },
-                        setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
-                        remove: p.isDefault ? nil : { store.removeRequest = p; showWindow() }
-                    )
-                }
-            }
-            .padding(.horizontal, 6)
-
-            Divider().padding(.vertical, 8)
-
-            VStack(spacing: 0) {
-                if let best = store.bestProfile() {
-                    MenuAction(title: "Open Most Free: \(best.name)", symbol: "bolt.circle",
-                               shortcut: store.bestShortcutEnabled ? "⌥⌘B" : nil) {
-                        store.launch(best); closePanel()
-                    }
-                }
-                MenuAction(title: "New Profile…", symbol: "plus.circle") {
-                    store.showAdd = true
-                    showWindow()
-                }
-                MenuAction(title: "Open Lanes", symbol: "macwindow") { showWindow() }
-                MenuAction(title: "Quit", symbol: "power") { NSApp.terminate(nil) }
-            }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 6)
-        }
-        .frame(width: 300)
-        .onAppear { store.refreshUsageIfStale() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            store.refreshUsageIfStale()
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Lanes").font(.headline)
-                if let t = store.lastUsageUpdate {
-                    Text("Updated \(Text(t, style: .relative)) ago")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else {
-                    Text("Fetching usage…").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button { store.refresh(); store.refreshUsage() } label: {
-                if store.isRefreshingUsage {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .buttonStyle(.borderless)
-            .frame(width: 20, height: 20)
-            .help("Refresh usage")
-            settingsMenu
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-    }
-
-    private var settingsMenu: some View {
-        Menu {
-            Toggle("Usage alerts (80%, 95% and resets)", isOn: $store.alertsEnabled)
-            Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin },
-                                                    set: { store.setLaunchAtLogin($0) }))
-            Toggle("Shortcut ⌥⌘P opens this panel", isOn: $store.shortcutEnabled)
-            Toggle("Shortcut ⌥⌘B opens the most free profile", isOn: $store.bestShortcutEnabled)
-            Toggle("Send claude:// links to the right profile", isOn: $store.routeLinks)
-            Menu("Refresh usage every") {
-                Picker("Refresh usage every", selection: $store.usageInterval) {
-                    ForEach([60.0, 120, 300, 600, 900], id: \.self) { Text("\(Int($0 / 60)) min").tag($0) }
-                }
-                .pickerStyle(.inline)
-            }
-        } label: {
-            Image(systemName: "gearshape")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: 22, height: 20)
-        .help("Settings")
-    }
-
-    private func closePanel() { NSApp.keyWindow?.orderOut(nil) }
-
-    private func showWindow() {
-        closePanel()
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "main")
-    }
-}
-
-struct MenuProfileRow: View {
-    let profile: Profile
-    let isRunning: Bool
-    let usage: Usage?
-    let isMostFree: Bool
-    let history: [UsageSample]
-    let launch: () -> Void
-    let reveal: () -> Void
-    let setColor: ((String) -> Void)?
-    let remove: (() -> Void)?
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: launch) {
-            VStack(alignment: .leading, spacing: 7) {
-                titleRow
-                usageBody
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .contextMenu {
-            Button(isRunning ? "Focus" : "Launch") { launch() }
-            Button("Reveal Data Folder in Finder") { reveal() }
-            if let setColor {
-                Menu("Change Color") {
-                    ForEach(ProfileColor.all) { c in
-                        Button(c.name.capitalized) { setColor(c.name) }
-                    }
-                }
-            }
-            if let remove {
-                Divider()
-                Button("Remove…", role: .destructive) { remove() }
-            }
-        }
-    }
-
-    private var titleRow: some View {
-        HStack(spacing: 8) {
-            Circle().fill(profile.color.swatch).frame(width: 10, height: 10)
-            Text(profile.name).font(.system(size: 13, weight: .semibold))
-            if isMostFree {
-                Text("Most free")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(profile.color.swatch)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(profile.color.swatch.opacity(0.18)))
-            }
-            Spacer()
-            Sparkline(samples: history, tint: profile.color.swatch)
-            if hovering {
-                HStack(spacing: 3) {
-                    Text(isRunning ? "Focus" : "Launch")
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else if isRunning {
-                HStack(spacing: 4) {
-                    Circle().fill(Color.green).frame(width: 6, height: 6)
-                    Text("Running")
-                }
-                .font(.caption)
-                .foregroundStyle(Color.green)
-            }
-        }
-    }
-
-    @ViewBuilder private var usageBody: some View {
-        if let usage {
-            if usage.needsSignIn {
-                note("Not signed in. Launch it and sign in to see usage.", symbol: "person.crop.circle.badge.exclamationmark")
-            } else if let error = usage.error {
-                note("Usage unavailable: \(error)", symbol: "exclamationmark.triangle")
-            } else if usage.hasNoData {
-                note("No usage data yet.", symbol: "chart.bar")
-            } else {
-                HStack(alignment: .top, spacing: 14) {
-                    UsageBar(label: "5 hours", value: usage.fiveHour, reset: usage.fiveHourReset, tint: profile.color.swatch)
-                    UsageBar(label: "Week", value: usage.sevenDay, reset: usage.sevenDayReset, tint: profile.color.swatch)
-                }
-            }
-        } else {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("Loading usage…").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func note(_ text: String, symbol: String) -> some View {
-        Label(text, systemImage: symbol)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-struct UsageBar: View {
-    let label: String
-    let value: Double?
-    let reset: Date?
-    let tint: Color
-
-    private var fraction: Double { min(max((value ?? 0) / 100, 0), 1) }
-    private var barColor: Color { usageColor(value, tint: tint) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(label).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
-                    .font(.caption.monospacedDigit().weight(.medium))
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.12))
-                    Capsule().fill(barColor).frame(width: geo.size.width * fraction)
-                }
-            }
-            .frame(height: 5)
-            if let text = resetText(reset) {
-                Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -1241,425 +987,5 @@ enum UsageHistory {
             if !profiles.contains(k) { h[k] = nil; continue }
             h[k]?.removeAll { $0.t < cutoff }
         }
-    }
-}
-
-// The last 24 hours of 5-hour usage, as a small line in the profile row.
-struct Sparkline: View {
-    let samples: [UsageSample]
-    let tint: Color
-    private let window: TimeInterval = 24 * 3600
-
-    var body: some View {
-        let start = Date().addingTimeInterval(-window)
-        let pts = samples.compactMap { s -> (Double, Double)? in
-            guard s.t >= start, let h = s.h else { return nil }
-            return (s.t.timeIntervalSince(start) / window, min(max(h, 0), 100) / 100)
-        }
-        if pts.count >= 2 {
-            Canvas { ctx, size in
-                func at(_ p: (Double, Double)) -> CGPoint {
-                    CGPoint(x: p.0 * size.width, y: size.height - 1 - p.1 * (size.height - 2))
-                }
-                var line = Path()
-                line.move(to: at(pts[0]))
-                for p in pts.dropFirst() { line.addLine(to: at(p)) }
-                var area = line
-                area.addLine(to: CGPoint(x: at(pts[pts.count - 1]).x, y: size.height))
-                area.addLine(to: CGPoint(x: at(pts[0]).x, y: size.height))
-                area.closeSubpath()
-                ctx.fill(area, with: .color(tint.opacity(0.18)))
-                ctx.stroke(line, with: .color(tint), lineWidth: 1.2)
-            }
-            .frame(width: 56, height: 16)
-            .help("5-hour usage over the last 24 hours (peak \(Int((pts.map(\.1).max() ?? 0) * 100))%)")
-        }
-    }
-}
-
-struct MenuAction: View {
-    let title: String
-    let symbol: String
-    var shortcut: String? = nil
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol).frame(width: 18).foregroundStyle(.secondary)
-                Text(title)
-                Spacer()
-                if let shortcut { Text(shortcut).font(.caption).foregroundStyle(.tertiary) }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering ? Color.primary.opacity(0.08) : Color.clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-    }
-}
-
-// MARK: - Views
-
-struct ContentView: View {
-    @ObservedObject var store: ProfileStore
-    @State private var removing: Profile?
-    @State private var confirmWipe: Profile?
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 180), spacing: 14)]
-
-    // SwiftUI opens the window at launch; a menu bar app shouldn't. Only the
-    // first appearance is swallowed, and only if nothing asked for the window.
-    private static var launchHandled = false
-    private func hideLaunchWindow() {
-        guard !Self.launchHandled else { return }
-        Self.launchHandled = true
-        guard !store.showAdd, store.removeRequest == nil else { return }
-        DispatchQueue.main.async {
-            NSApp.windows.first { $0.title == "Lanes" }?.close()
-        }
-    }
-
-    private func takeRemoveRequest() {
-        if let p = store.removeRequest {
-            removing = p
-            store.removeRequest = nil
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            UpdateBar(installedVersion: store.installedVersion, outdated: store.outdatedProfiles)
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(store.profiles) { p in
-                        ProfileCard(
-                            profile: p,
-                            isRunning: store.running.contains(p.id),
-                            launch: { store.launch(p) },
-                            reveal: { store.revealData(p) },
-                            setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
-                            remove: p.isDefault ? nil : { removing = p }
-                        )
-                    }
-                    AddCard { store.showAdd = true }
-                }
-                .padding(20)
-            }
-        }
-        .frame(minWidth: 580, idealWidth: 640, minHeight: 380, idealHeight: 420)
-        .background(WindowBackground())
-        .onAppear {
-            store.setUp()
-            takeRemoveRequest()
-            hideLaunchWindow()
-        }
-        .onReceive(store.$removeRequest) { _ in takeRemoveRequest() }
-        .sheet(isPresented: $store.showAdd) {
-            AddSheet { name, color in store.add(name, color: color) }
-        }
-        .confirmationDialog(
-            "Remove “\(removing?.name ?? "")”?",
-            isPresented: Binding(get: { removing != nil },
-                                 set: { if !$0 { removing = nil } }),
-            presenting: removing
-        ) { p in
-            Button("Remove Launcher Only") { store.remove(p, deleteData: false) }
-            Button("Delete Everything…", role: .destructive) { confirmWipe = p }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("“Launcher Only” deletes the Spotlight app but keeps chats, login, and settings on disk — the profile stays in this window and can be fully removed later.")
-        }
-        .alert(
-            "Delete all data for “\(confirmWipe?.name ?? "")”?",
-            isPresented: Binding(get: { confirmWipe != nil },
-                                 set: { if !$0 { confirmWipe = nil } }),
-            presenting: confirmWipe
-        ) { p in
-            Button("Delete", role: .destructive) { store.remove(p, deleteData: true) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Chats, login, and settings will be permanently erased. This cannot be undone.")
-        }
-        .alert(
-            "Something went wrong",
-            isPresented: Binding(get: { store.errorMessage != nil },
-                                 set: { if !$0 { store.errorMessage = nil } })
-        ) {
-            Button("OK") {}
-        } message: {
-            Text(store.errorMessage ?? "")
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 38, height: 38)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Lanes").font(.title2.bold())
-                Text("Isolated Claude Desktop accounts, side by side")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                store.showAdd = true
-            } label: {
-                Label("New Profile", systemImage: "plus")
-            }
-            .controlSize(.large)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-    }
-}
-
-// Profiles self-update on their own, so there's no update chore to nag about.
-// The only thing worth surfacing is a purely informational note: a profile
-// whose clone is behind the installed default will catch up on its next
-// launch. Shown only when such a profile exists; otherwise the bar collapses
-// to nothing. A clone that self-updated AHEAD of the default is never listed.
-struct UpdateBar: View {
-    let installedVersion: String
-    let outdated: [String]
-
-    var body: some View {
-        if outdated.isEmpty {
-            EmptyView()
-        } else {
-            VStack(spacing: 0) {
-                HStack(spacing: 7) {
-                    Image(systemName: "arrow.down.circle")
-                        .foregroundStyle(.secondary)
-                    Text(driftText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                Divider()
-            }
-        }
-    }
-
-    private var driftText: String {
-        let names = outdated.joined(separator: ", ")
-        let ver = installedVersion.isEmpty ? "" : " \(installedVersion)"
-        let many = outdated.count > 1
-        return "\(names) \(many ? "are" : "is") behind your default Claude\(ver) — \(many ? "they'll" : "it'll") update on \(many ? "their" : "its") next launch."
-    }
-}
-
-struct WindowBackground: View {
-    var body: some View {
-        LinearGradient(
-            colors: [Color(nsColor: .windowBackgroundColor),
-                     Color(nsColor: .underPageBackgroundColor)],
-            startPoint: .top, endPoint: .bottom
-        )
-        .ignoresSafeArea()
-    }
-}
-
-struct ProfileCard: View {
-    let profile: Profile
-    let isRunning: Bool
-    let launch: () -> Void
-    let reveal: () -> Void
-    let setColor: ((String) -> Void)?
-    let remove: (() -> Void)?
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(nsImage: claudeIcon)
-                .resizable()
-                .frame(width: 54, height: 54)
-                .hueRotation(.degrees(profile.color.hue))
-                .shadow(color: .black.opacity(hovering ? 0.25 : 0.1),
-                        radius: hovering ? 7 : 3, y: 2)
-            Text(profile.name)
-                .font(.headline)
-                .lineLimit(1)
-            Text(profile.isDefault ? "your main install" : "isolated profile")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(isRunning ? Color.green : Color.secondary.opacity(0.35))
-                    .frame(width: 7, height: 7)
-                Text(isRunning ? "Running" : "Stopped")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if isRunning {
-                Button(action: launch) {
-                    Text("Focus").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            } else {
-                Button(action: launch) {
-                    Text("Launch").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(profile.color.swatch)
-                .controlSize(.small)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(hovering ? 1.0 : 0.65))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        )
-        .overlay(alignment: .topTrailing) {
-            // Discoverable stand-in for the right-click context menu.
-            Menu {
-                cardActions
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .padding(7)
-            .opacity(hovering ? 1.0 : 0.4)
-        }
-        .scaleEffect(hovering ? 1.02 : 1.0)
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .onHover { hovering = $0 }
-        .contextMenu {
-            cardActions
-        }
-    }
-
-    // Shared between the right-click context menu and the ellipsis button.
-    @ViewBuilder
-    private var cardActions: some View {
-        Button("Launch") { launch() }
-        Button("Reveal Data Folder in Finder") { reveal() }
-        if let setColor {
-            Menu("Change Color") {
-                ForEach(ProfileColor.all) { c in
-                    Button {
-                        setColor(c.name)
-                    } label: {
-                        if c.name == profile.colorName {
-                            Label(c.name.capitalized, systemImage: "checkmark")
-                        } else {
-                            Text(c.name.capitalized)
-                        }
-                    }
-                }
-            }
-        }
-        if let remove {
-            Divider()
-            Button("Remove…", role: .destructive) { remove() }
-        }
-    }
-}
-
-struct AddCard: View {
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 10) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(hovering ? Color.accentColor : Color.secondary)
-                Text("New profile")
-                    .font(.headline)
-                    .foregroundStyle(hovering ? Color.primary : Color.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 150)
-        }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(hovering ? 0.65 : 0.25))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color(nsColor: .separatorColor),
-                              style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-        )
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .onHover { hovering = $0 }
-    }
-}
-
-struct AddSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var colorName = "orange"
-    let create: (String, String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("New profile").font(.title3.bold())
-            TextField("personal, client-acme…", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
-            HStack(spacing: 10) {
-                Image(nsImage: claudeIcon)
-                    .resizable()
-                    .frame(width: 30, height: 30)
-                    .hueRotation(.degrees(ProfileColor.named(colorName).hue))
-                ForEach(ProfileColor.all) { c in
-                    Circle()
-                        .fill(c.swatch)
-                        .frame(width: 18, height: 18)
-                        .overlay(
-                            Circle().strokeBorder(.primary.opacity(c.name == colorName ? 0.8 : 0),
-                                                  lineWidth: 2)
-                        )
-                        .onTapGesture { colorName = c.name }
-                        .help(c.name.capitalized)
-                }
-            }
-            Text("Creates a fully isolated Claude — its own login, chats, and settings — plus a Spotlight launcher (“Claude <Name>”).\n\nBefore its first sign-in, quit every other Claude window: the login link lands on whichever instance is running.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Create") { submit() }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
-    }
-
-    private func submit() {
-        let n = name.trimmingCharacters(in: .whitespaces)
-        guard !n.isEmpty else { return }
-        create(n, colorName)
-        dismiss()
     }
 }

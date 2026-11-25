@@ -62,7 +62,7 @@ struct UsageWidgetView: View {
                 content(snap)
             } else {
                 VStack(spacing: 6) {
-                    Image(systemName: "gauge.with.needle").font(.title2).foregroundStyle(.secondary)
+                    Image(systemName: "road.lanes").font(.title2).foregroundStyle(.secondary)
                     Text("Open Lanes to load usage.")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
@@ -106,23 +106,6 @@ struct UsageWidgetView: View {
     }
 }
 
-private struct Bar: View {
-    let value: Double?
-    let tint: Color
-    var height: CGFloat = 5
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.12))
-                Capsule().fill(usageColor(value, tint: tint))
-                    .frame(width: geo.size.width * min(max((value ?? 0) / 100, 0), 1))
-            }
-        }
-        .frame(height: height)
-    }
-}
-
 private func percent(_ v: Double?) -> String { v.map { "\(Int($0.rounded()))%" } ?? "—" }
 
 private func statusText(_ p: UsageSnapshot.Entry) -> String? {
@@ -137,13 +120,16 @@ private struct SmallRow: View {
         let tint = ProfileColor.named(p.color).swatch
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
-                Circle().fill(tint).frame(width: 7, height: 7)
+                Capsule().fill(tint.opacity(p.running ? 1 : 0.4)).frame(width: 3, height: 11)
                 Text(p.name).font(.caption.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 2)
                 Text(statusText(p) ?? percent(p.fiveHour))
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
-            if statusText(p) == nil { Bar(value: p.fiveHour, tint: tint, height: 4) }
+            if statusText(p) == nil {
+                LaneMeter(value: p.fiveHour, tint: tint,
+                          pace: elapsedFraction(reset: p.fiveHourReset, window: LimitWindow.fiveHour), height: 4)
+            }
         }
     }
 }
@@ -155,8 +141,8 @@ private struct WideRow: View {
     var body: some View {
         let tint = ProfileColor.named(p.color).swatch
         HStack(alignment: .center, spacing: 10) {
-            HStack(spacing: 5) {
-                Circle().fill(tint).frame(width: 8, height: 8)
+            HStack(spacing: 6) {
+                Capsule().fill(tint.opacity(p.running ? 1 : 0.4)).frame(width: 3.5, height: 16)
                 Text(p.name).font(.caption.weight(.semibold)).lineLimit(1)
             }
             .frame(width: 80, alignment: .leading)
@@ -164,20 +150,20 @@ private struct WideRow: View {
                 Text(status).font(.caption2).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             } else {
-                column("5h", p.fiveHour, p.fiveHourReset, tint)
-                column("Week", p.sevenDay, p.sevenDayReset, tint)
+                column("5h", p.fiveHour, p.fiveHourReset, LimitWindow.fiveHour, tint)
+                column("Week", p.sevenDay, p.sevenDayReset, LimitWindow.week, tint)
             }
         }
     }
 
-    private func column(_ label: String, _ value: Double?, _ reset: Date?, _ tint: Color) -> some View {
+    private func column(_ label: String, _ value: Double?, _ reset: Date?, _ window: TimeInterval, _ tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(label).font(.caption2).foregroundStyle(.secondary)
                 Spacer(minLength: 2)
                 Text(percent(value)).font(.caption2.monospacedDigit().weight(.medium))
             }
-            Bar(value: value, tint: tint)
+            LaneMeter(value: value, tint: tint, pace: elapsedFraction(reset: reset, window: window), height: 5)
             if showResets, let reset, reset > Date() {
                 // Counts down live without timeline reloads.
                 Text(reset, style: .relative).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)

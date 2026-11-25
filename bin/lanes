@@ -1024,16 +1024,19 @@ build_manager_app() {
   local bundle="$1"
   command -v swiftc >/dev/null 2>&1 ||
     err "swiftc not found. Install Xcode Command Line Tools (xcode-select --install), or use 'lanes chooser' for the dialog-based picker."
-  local src="${SCRIPT_PATH:h:h}/app/Lanes.swift"
-  local shared="${SCRIPT_PATH:h:h}/app/Shared.swift" widget="${SCRIPT_PATH:h:h}/app/Widget.swift"
-  [[ -f "$src" && -f "$shared" && -f "$widget" ]] ||
-    err "GUI source not found at ${src:h} — run lanes from a repo checkout to build the GUI."
+  local appdir="${SCRIPT_PATH:h:h}/app"
+  local shared="$appdir/Shared.swift" widget="$appdir/Widget.swift"
+  # The app is every source in app/ except the widget's, which builds alone.
+  local -a srcs=("$appdir"/*.swift(N))
+  srcs=(${srcs:#$widget})
+  [[ -f "$appdir/Lanes.swift" && -f "$shared" && -f "$widget" ]] ||
+    err "GUI source not found at $appdir — run lanes from a repo checkout to build the GUI."
 
   rm -rf "$bundle"
   mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-  info "Compiling Lanes.swift (first build can take ~30s)…"
-  swift_compile "$bundle/Contents/MacOS/Lanes" -parse-as-library "$src" "$shared" ||
-    err "Compiling Lanes.swift failed."
+  info "Compiling the Lanes app (first build can take ~30s)…"
+  swift_compile "$bundle/Contents/MacOS/Lanes" -parse-as-library $srcs ||
+    err "Compiling the Lanes app failed."
   build_widget "$bundle/Contents/PlugIns/LanesWidget.appex" "$widget" "$shared" ||
     err "Compiling the widget failed."
   build_helper "$bundle/Contents/Resources/$HELPER_NAME.app" || err "Compiling the helper failed."
@@ -1221,43 +1224,35 @@ cmd_remove() {
 
 cmd_help() {
   cat <<'EOF'
-lanes — run multiple Claude Desktop accounts side by side on macOS
+lanes — every Claude account in its own lane
+
+PROFILES
+  lanes add <name> [--color <c>]   Create a profile and its Spotlight launcher
+                                   (lanes add "client acme" makes "Client Acme")
+  lanes launch <name>              Launch it, or bring it forward if running
+  lanes launch --best              Launch the profile with the most 5-hour room
+  lanes list                       Profiles and launcher health
+  lanes color <name> <c>           Recolor its Dock tile and launcher
+                                   (orange red yellow green teal blue purple pink)
+  lanes remove <name>              Remove its launcher; asks before deleting data
+                                   (--keep-data or --delete-data to skip asking)
 
 USAGE
-  lanes add <name> [--color <c>]
-                      Create a profile + Spotlight launcher
-                      (e.g. lanes add personal --color blue)
-  lanes launch <name>   Launch a profile (or focus it if already running).
-                      Runs from a per-profile Claude.app clone, so the Dock
-                      tile wears the profile color and owns the window, with
-                      its own Claude Code config dir (CLAUDE_CONFIG_DIR)
-  lanes launch --best   Launch the profile with the most 5-hour headroom
-  lanes usage [--json]  5-hour and weekly usage per profile, with reset times
-                      (as last loaded by the Lanes menu bar app)
-  lanes watchdog [install|uninstall|status]
-                      LaunchAgent that re-homes a clone relaunched without
-                      its profile (Claude's self-update does that). Installed
-                      automatically by lanes add
-  lanes watch [--once]  What the watchdog runs
-  lanes color <name> <c>
-                      Change a profile's icon color
-                      (orange red yellow green teal blue purple pink)
-  lanes list            List profiles and launcher health
-  lanes remove <name>   Remove a profile's launcher; add --keep-data or
-                      --delete-data to skip the interactive question
-  lanes gui             Build + install the "Lanes" SwiftUI app
-                      (needs Xcode Command Line Tools; run from repo checkout)
-  lanes chooser         Build the AppleScript picker instead — zero build
-                      requirements, same Spotlight name, fewer looks;
-                      refuses to replace the SwiftUI app without --force
-  lanes setup           Rebuild launchers, watchdog and helper from this lanes
-                      (the app runs it when a new version first opens)
-  lanes version         Print the version
-  lanes help            This text
+  lanes usage [--json]             5-hour and weekly usage with reset times,
+                                   as last loaded by the Lanes menu bar app
 
-Profiles live in ~/Library/Application Support/Lanes/profiles/<Name>; that profile's
-Claude Code config (Code/Cowork tab) lives in <profile>/claude-config.
-Launchers live in ~/Applications and are indexed by Spotlight.
+MAINTENANCE
+  lanes watchdog [install|uninstall|status]
+                                   The LaunchAgent that puts a profile back on its
+                                   own data after an update relaunches it
+  lanes watch [--once]             What the watchdog runs
+  lanes setup [--if-needed]        Point launchers, watchdog and helper at this copy
+  lanes gui                        Build and install the app (repo checkout + Xcode tools)
+  lanes chooser [--force]          Build the AppleScript picker instead
+  lanes version | help
+
+Profiles live in ~/Library/Application Support/Lanes/profiles/<Name>, each with
+its own Claude Code config in claude-config/. Launchers live in ~/Applications.
 EOF
 }
 
