@@ -15,7 +15,8 @@
   <a href="https://lanes.pego.tech">Website</a> ·
   <a href="docs/how-it-works.md">How it works</a> ·
   <a href="docs/cli.md">Command line</a> ·
-  <a href="docs/faq.md">FAQ</a>
+  <a href="docs/faq.md">FAQ</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
@@ -220,7 +221,8 @@ sign-in. The full story is in **[How it works](docs/how-it-works.md)**.
 - [How it works](docs/how-it-works.md): clones, colors, updates, links, usage
 - [Command line](docs/cli.md): every `lanes` command, plus the usage file formats
 - [FAQ](docs/faq.md): your existing Claude, disk space, updates, the terms of service
-- [Development](docs/development.md): building from source, tests, screenshots
+- [Changelog](CHANGELOG.md): what changed in each version
+- [Development](docs/development.md): building from source, tests, screenshots, releases
 
 ## Credits
 

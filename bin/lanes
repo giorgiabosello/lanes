@@ -26,7 +26,7 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-LANES_VERSION="0.9.0"
+LANES_VERSION="0.9.1"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
@@ -1144,6 +1144,8 @@ EOF
   # drive the exact same code path as the CLI.
   bundle_script "$bundle"
   cp "${SCRIPT_PATH:h:h}/app/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
+  # What's New in the app reads the same changelog as GitHub and the website.
+  cp "${SCRIPT_PATH:h:h}/CHANGELOG.md" "$bundle/Contents/Resources/CHANGELOG.md"
   cp "${SCRIPT_PATH:h:h}/app/AppIcon.icns" "$bundle/Contents/Resources/$HELPER_NAME.app/Contents/Resources/AppIcon.icns"
   /usr/bin/codesign --force --sign - "$bundle/Contents/Resources/$HELPER_NAME.app"
 
@@ -1214,7 +1216,7 @@ cmd_gui() {
   mkdir -p "$LAUNCHER_DIR"
   # A running GUI keeps executing the replaced binary; restart it on the new one.
   local running=0
-  pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null && running=1
+  quit_app "$app" && running=1
   rm -rf "$app"
   mv "$bundle" "$app"
   rm -rf "$tmp"
@@ -1250,6 +1252,21 @@ latest_version() {
   print -- "${loc##*/tag/v}"
 }
 
+# Quits a running Lanes.app (SIGTERM, a normal quit; SIGKILL after 10 s) and
+# returns whether one was running. -a matters: the app's own updater runs
+# `lanes update` as its child, and macOS pkill/pgrep skip their ancestors
+# without it, which left the old app running on top of the new bundle.
+quit_app() {
+  local pattern="$1/Contents/MacOS/Lanes" i
+  pkill -a -f "$pattern" 2>/dev/null || return 1
+  for i in {1..50}; do
+    pgrep -a -f "$pattern" >/dev/null 2>&1 || return 0
+    sleep 0.2
+  done
+  pkill -9 -a -f "$pattern" 2>/dev/null || true
+  return 0
+}
+
 # `lanes update`: replaces the installed Lanes.app with the latest release.
 # curl (unlike a browser) doesn't quarantine what it downloads, so the new
 # version opens without a Gatekeeper prompt. The release is unpacked and its
@@ -1271,6 +1288,14 @@ cmd_update() {
   latest=$(latest_version) || err "Could not reach GitHub to check for updates."
   if ! version_lt "$LANES_VERSION" "$latest"; then
     ok "Lanes $LANES_VERSION is up to date."
+    # The app only asks to update when it runs an older version than the
+    # bundle it lives in: an update (by 0.9.0 or earlier, see quit_app)
+    # replaced the bundle but never quit it. Restart it on the new one.
+    local stale
+    if (( relaunch )) && stale=$(manager_app) && quit_app "$stale"; then
+      info "Restarting Lanes on $LANES_VERSION."
+      [[ -n "${LANES_NO_OPEN:-}" ]] || open "$stale"
+    fi
     return 0
   fi
   if (( check )); then
@@ -1305,16 +1330,8 @@ cmd_update() {
     err "The downloaded app's signature doesn't verify; not installing it."
   xattr -dr com.apple.quarantine "$new" 2>/dev/null || true
 
-  # Quit the running app (SIGTERM: a normal quit) and wait for it to go.
-  local running=0 i
-  if pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null; then
-    running=1
-    for i in {1..50}; do
-      pgrep -f "$app/Contents/MacOS/Lanes" >/dev/null 2>&1 || break
-      sleep 0.2
-    done
-    pkill -9 -f "$app/Contents/MacOS/Lanes" 2>/dev/null || true
-  fi
+  local running=0
+  quit_app "$app" && running=1
 
   mv "$app" "$tmp/old" || err "Couldn't move the old Lanes aside."
   if ! mv "$new" "$app"; then
@@ -1326,7 +1343,7 @@ cmd_update() {
   # The new version's lanes points launchers and the watchdog at itself.
   zsh "$app/Contents/Resources/lanes" setup --if-needed >/dev/null 2>&1 ||
     warn "Refreshing launchers failed; opening Lanes retries it."
-  (( running || relaunch )) && open "$app"
+  if (( running || relaunch )) && [[ -z "${LANES_NO_OPEN:-}" ]]; then open "$app"; fi
   return 0
 }
 

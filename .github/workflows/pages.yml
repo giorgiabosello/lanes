@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: [site/**, docs/images/**, scripts/site.sh, .github/workflows/pages.yml]
+    paths: [site/**, docs/images/**, CHANGELOG.md, scripts/site.sh, scripts/changelog.py, .github/workflows/pages.yml]
   workflow_dispatch:
 
 permissions:
@@ -24,10 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Assemble the site
-        run: |
-          mkdir -p _site/images
-          cp -R site/. _site/
-          cp docs/images/*.png docs/images/*.svg _site/images/
+        run: sh scripts/site.sh
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

@@ -40,6 +40,9 @@ check "signature verifies" codesign --verify --deep --strict "$APP"
 check "Info.plist version is $version" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$version"
 check "bundled lanes is bin/lanes" cmp bin/lanes "$APP/Contents/Resources/lanes"
 check "app has its icon" cmp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+check "app bundles the changelog" cmp CHANGELOG.md "$APP/Contents/Resources/CHANGELOG.md"
+check "changelog has an entry for $version" python3 scripts/changelog.py title "$version"
+check "website changelog builds" sh -c 'python3 scripts/changelog.py html site/changelog.html "$(mktemp)"'
 
 # ---- first launch of a downloaded copy, in a sandbox HOME -------------------
 
@@ -100,5 +103,30 @@ check "updated app is this build" cmp bin/lanes "$installed/Contents/Resources/l
 check "updated app's signature verifies" codesign --verify --deep --strict "$installed"
 check "updated app is not quarantined" not_quarantined "$installed"
 check "update re-ran setup" grep -qxF "$version $installed/Contents/Resources/lanes" "$sandbox/Library/Caches/Lanes/setup"
+
+# The app runs `lanes update` as its own child, and must still be quit: macOS
+# pkill skips its ancestors unless told otherwise. A script stands in for the
+# app's binary (its command line holds the same path) and outlives the update
+# unless the update kills it.
+parent="$sandbox/Parent/Lanes.app"
+mkdir -p "$sandbox/Parent"
+ditto -x -k build/Lanes.zip "$sandbox/Parent"
+sed -i '' 's/^LANES_VERSION=.*/LANES_VERSION="0.0.1"/' "$parent/Contents/Resources/lanes"
+cat > "$parent/Contents/MacOS/Lanes" <<EOF
+#!/bin/zsh
+HOME=${(q)sandbox} LANES_WATCH_LABEL=${(q)label} LANES_LATEST=${(q)version} LANES_RELEASE_ZIP=${(q)PWD}/build/Lanes.zip \\
+  LANES_NO_OPEN=1 zsh ${(q)parent}/Contents/Resources/lanes update --relaunch >/dev/null 2>&1 &
+wait
+sleep 60
+EOF
+chmod +x "$parent/Contents/MacOS/Lanes"
+"$parent/Contents/MacOS/Lanes" &
+fake=$!
+for i in {1..150}; do kill -0 $fake 2>/dev/null || break; sleep 0.2; done
+check "update quits the app that runs it" sh -c '! kill -0 "$1" 2>/dev/null' _ $fake
+kill $fake 2>/dev/null
+# Let the orphaned update (and its setup) finish before the sandbox goes.
+for i in {1..300}; do pgrep -f "$parent/Contents/Resources/lanes" >/dev/null || break; sleep 0.2; done
+check "update still replaces it" cmp bin/lanes "$parent/Contents/Resources/lanes"
 
 (( fails == 0 )) && print -- "all passed" || { print -- "$fails failed"; exit 1 }

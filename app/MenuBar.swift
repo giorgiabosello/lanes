@@ -119,6 +119,8 @@ struct MenuPanel: View {
             .padding(.bottom, 6)
             if let v = store.availableUpdate, !store.autoUpdate || store.isUpdating || store.updateError != nil {
                 updateBar(v)
+            } else if let v = store.updatedTo {
+                whatsNewBar(v)
             }
             footer
         }
@@ -203,6 +205,30 @@ struct MenuPanel: View {
         .padding(.trailing, 6)
         .padding(.vertical, 6)
         .background(Brand.coral.opacity(0.08))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    // After an update, until opened or dismissed.
+    private func whatsNewBar(_ version: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles").foregroundStyle(Brand.azure)
+            Text("Updated to Lanes \(version)")
+                .font(.callout)
+            Spacer()
+            Button("What's New") { closePanel(); WhatsNewWindow.show() }
+                .buttonStyle(HoverButtonStyle())
+                .font(.callout.weight(.semibold))
+            Button { store.updatedTo = nil } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(HoverButtonStyle(padding: EdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)))
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(Brand.azure.opacity(0.08))
         .overlay(alignment: .top) { Divider() }
     }
 

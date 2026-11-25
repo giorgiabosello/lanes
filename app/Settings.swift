@@ -74,6 +74,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button("What's New") { WhatsNewWindow.show() }
                     if let v = store.availableUpdate, !store.isUpdating {
                         Button("Install \(v)") { store.installUpdate() }
                     } else {

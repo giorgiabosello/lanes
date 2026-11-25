@@ -296,18 +296,32 @@ private func writeUsageDebug(dataDir: String, raw: [[String: Any]]) {
 // Shows banners even while the app is frontmost (the default is to suppress them).
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
+    // Always, at launch: clicks on notifications (What's New) reach us even
+    // with alerts off. Doesn't ask for permission.
+    func attach() { UNUserNotificationCenter.current().delegate = self }
+
     func setUp() {
         let c = UNUserNotificationCenter.current()
         c.delegate = self
         c.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
-    func post(title: String, body: String) {
+    static let whatsNewID = "whats-new"
+
+    func post(title: String, body: String, identifier: String = UUID().uuidString) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+    // Clicking "Lanes updated to …" opens What's New.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        if response.notification.request.identifier == Self.whatsNewID {
+            DispatchQueue.main.async { WhatsNewWindow.show() }
+        }
+        done()
     }
     // Fires at `date` even if the app has quit by then; posting again with the
     // same identifier replaces the pending one.
@@ -459,6 +473,10 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    // Set on the first launch of a newer version than the last one run (an
+    // update), until What's New is opened or dismissed: the panel's strip.
+    @Published var updatedTo: String?
+
     // Lanes' own updates (not Claude's): the newer release on GitHub, if any.
     @Published var availableUpdate: String?
     @Published var isUpdating = false
@@ -501,6 +519,7 @@ final class ProfileStore: ObservableObject {
             self?.claimLinksIfNeeded()
         }]
         scheduleUsageTimer()
+        Notifier.shared.attach()
         if alertsEnabled { Notifier.shared.setUp() }
         GlobalShortcut.setEnabled(.panel, shortcutEnabled)
         GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
@@ -509,6 +528,7 @@ final class ProfileStore: ObservableObject {
         // Not only from the window: an auto-update relaunches straight into
         // the menu bar, and the new version must still repoint launchers.
         setUp()
+        noteVersionChange()
         // First check shortly after launch, then every 6 hours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.checkForUpdate() }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
@@ -518,6 +538,24 @@ final class ProfileStore: ObservableObject {
 
     var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    // After an update (this version is newer than the last one that ran),
+    // announce it once: a notification that opens What's New, and a strip in
+    // the panel. A first install or a downgrade only records the version.
+    private func noteVersionChange() {
+        let key = "lastRunVersion", d = UserDefaults.standard
+        // 0.9.0 and earlier didn't record it; usage history means Lanes has
+        // run here before, so this launch is an update, not a first install.
+        let last = d.string(forKey: key)
+            ?? (FileManager.default.fileExists(atPath: UsageHistory.path) ? "0.0.0" : nil)
+        d.set(appVersion, forKey: key)
+        guard let last, versionLessThan(last, appVersion), let entry = Changelog.entry(appVersion) else { return }
+        updatedTo = appVersion
+        Notifier.shared.setUp()
+        Notifier.shared.post(title: "Lanes updated to \(appVersion)",
+                             body: "\(entry.title). Click to see what's new.",
+                             identifier: Notifier.whatsNewID)
     }
 
     // Asks GitHub for the latest release: releases/latest redirects to
@@ -568,6 +606,13 @@ final class ProfileStore: ObservableObject {
         p.terminationHandler = { proc in
             DispatchQueue.main.async {
                 self.isUpdating = false
+                // Still running, yet the bundle holds another version: the
+                // swap happened but this process was never quit. Restart.
+                if proc.terminationStatus == 0, let onDisk = bundleVersion(Bundle.main.bundlePath),
+                   onDisk != self.appVersion {
+                    self.relaunch()
+                    return
+                }
                 if proc.terminationStatus != 0 {
                     self.failedUpdate = target
                     let detail = (try? String(contentsOfFile: logPath, encoding: .utf8))?
@@ -582,6 +627,19 @@ final class ProfileStore: ObservableObject {
             failedUpdate = target
             updateError = error.localizedDescription
         }
+    }
+
+    // Quits and reopens this app from its bundle path: a detached shell
+    // waits for this process to exit, then opens the (new) bundle.
+    func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$0\"",
+                       Bundle.main.bundlePath, String(ProcessInfo.processInfo.processIdentifier)]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { updateError = error.localizedDescription; return }
+        NSApp.terminate(nil)
     }
 
     private func scheduleUsageTimer() {

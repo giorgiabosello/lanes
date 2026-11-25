@@ -53,9 +53,10 @@ main() {
   app="$dir/Lanes.app"
 
   # Quit a running copy so it can be replaced.
-  if pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null; then
+  # -a: include our ancestors, in case Lanes itself started this.
+  if pkill -a -f "$app/Contents/MacOS/Lanes" 2>/dev/null; then
     i=0
-    while pgrep -f "$app/Contents/MacOS/Lanes" >/dev/null 2>&1 && [ $i -lt 50 ]; do
+    while pgrep -a -f "$app/Contents/MacOS/Lanes" >/dev/null 2>&1 && [ $i -lt 50 ]; do
       sleep 0.2; i=$((i + 1))
     done
   fi

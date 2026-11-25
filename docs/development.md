@@ -30,9 +30,11 @@ app/Window.swift      the window: lanes, drawers, history chart, new-profile she
 app/MenuBar.swift     the menu bar glyph and panel
 app/Settings.swift    settings
 app/Components.swift  shared views: meters, lane markings, tinted icons
+app/Changelog.swift   What's New: parses the bundled CHANGELOG.md
 app/Shared.swift      compiled into both app and widget: colors, usage snapshot, meter
 app/Widget.swift      the WidgetKit extension
-scripts/              release build, tests, screenshots, the app icon
+scripts/              release build, tests, releases, changelog, website, screenshots, the app icon
+CHANGELOG.md          release notes for GitHub, the website and What's New
 ```
 
 The app is a front end. Creating, launching, recoloring and removing a
@@ -56,6 +58,26 @@ scripts/test.sh      # builds, checks the bundle, runs a quarantined copy's
 
 The tests never touch your real `~/Applications`, profiles or watchdog.
 
+### Releasing
+
+1. Bump `LANES_VERSION` at the top of `bin/lanes`.
+2. Add the version's entry at the top of `CHANGELOG.md`: a
+   `## <version> — <title>` heading, the date as `_YYYY-MM-DD_`, then
+   paragraphs and `- ` bullets (inline Markdown only).
+3. Commit both on `main`, then run `scripts/release.sh`.
+
+The script refuses a version without a changelog entry or one that's already
+released. It runs `scripts/test.sh`, shows the notes and asks before it
+pushes `main` and creates the release. `scripts/release.sh --notes` prints
+the notes without doing anything else.
+
+`CHANGELOG.md` is the one place release notes are written.
+`scripts/changelog.py` turns it into the GitHub release notes (with the
+install instructions around them) and the website's `changelog.html`. The
+build copies it into the app, where **Settings → What's New** shows it. The
+first launch after an update also posts a "Lanes updated" notification and
+puts a What's New strip in the menu bar panel.
+
 A release is a GitHub release tagged `v<version>` with **both** `Lanes.zip`
 and `Lanes.dmg` attached. The curl installer (`site/install`, served at
 lanes.pego.tech/install) and the updater (`lanes update`, which the app runs)
@@ -65,6 +87,17 @@ publishing the release is all it takes.
 
 The version lives in one place, `LANES_VERSION` at the top of `bin/lanes`.
 The app's `Info.plist` is written from it.
+
+## Website
+
+```sh
+scripts/site.sh serve           # builds _site/ and serves it on localhost:8000
+```
+
+`site/` holds the landing page and the changelog template; `scripts/site.sh`
+adds the images from `docs/images` and fills the changelog from
+`CHANGELOG.md`. The Pages workflow runs the same script on every push to
+`main` that touches them.
 
 ## Screenshots
 

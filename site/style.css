@@ -452,6 +452,33 @@ footer { border-top: 1px solid var(--line); padding: 36px 0; color: var(--dim); 
 footer a { text-decoration: none; }
 footer a:hover { color: var(--ink); }
 
+/* ---------- changelog page ---------- */
+/* Releases hang off one lane line, newest first; the latest wears coral. */
+.changelog { width: min(760px, 100% - 32px); padding: 132px 0 96px; }
+.changelog h1 { font-size: var(--fs-h2); line-height: 1.05; letter-spacing: var(--track-h2); margin: 0 0 16px; font-weight: 750; text-wrap: balance; animation: none; }
+.changelog .sub { margin-bottom: 56px; }
+.changelog .sub b { color: var(--ink); font-weight: 600; }
+.release { position: relative; padding: 0 0 52px 34px; border-left: 2px solid var(--line); margin-left: 6px; scroll-margin-top: 90px; }
+.release:last-of-type { border-left-color: transparent; padding-bottom: 0; }
+.release::before { content: ""; position: absolute; left: -8px; top: 4px; width: 14px; height: 14px; border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 2.5px var(--azure); }
+.release:first-of-type::before { background: var(--coral); box-shadow: 0 0 0 5px rgba(244, 115, 105, .18); }
+.rel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--dim); font-size: var(--fs-small); line-height: 1; }
+.rel-version { font: 650 15px/1 var(--font-mono); color: var(--ink); text-decoration: none; }
+.rel-version:hover { color: var(--azure); }
+.rel-latest { padding: 4px 8px; border-radius: 999px; background: rgba(50, 215, 75, .14); color: var(--ok); font-size: var(--fs-label); font-weight: 650; letter-spacing: .02em; }
+.rel-head time::before { content: "·"; margin-right: 10px; }
+.release h2 { font-size: clamp(24px, 3vw, 30px); letter-spacing: var(--track-h3); margin: 12px 0 14px; }
+.rel-body { color: var(--muted); }
+.rel-body p { margin: 0 0 14px; }
+.rel-body ul { margin: 0 0 14px; padding-left: 20px; }
+.rel-body li { margin-bottom: 8px; padding-left: 4px; }
+.rel-body li::marker { color: var(--dim); }
+.rel-body b { color: var(--ink); font-weight: 600; }
+.rel-body a, .rel-link { color: var(--azure); text-decoration: none; }
+.rel-body a:hover, .rel-link:hover { text-decoration: underline; }
+.rel-link { font-size: var(--fs-small); font-weight: 550; }
+.nav nav a[aria-current="page"] { color: var(--ink); }
+
 /* reveal */
 .reveal { opacity: 0; transform: translateY(28px); transition: opacity .8s, transform .8s var(--ease); }
 .reveal.in { opacity: 1; transform: none; }
