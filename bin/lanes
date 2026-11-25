@@ -612,13 +612,28 @@ sync_install() {
 # ---- commands ---------------------------------------------------------------
 
 cmd_add() {
-  local raw="${1:-}" color=""
-  [[ -n "$raw" ]] || err "Usage: lanes add <name> [--color <color>]   (e.g. lanes add personal --color blue)"
-  [[ "${2:-}" == "--color" && -n "${3:-}" ]] && color="$3"
+  local usage="Usage: lanes add <name> [--color <color>]   (e.g. lanes add personal --color blue)"
+  local color=""
+  # The name may come as several words (lanes add client acme): join them,
+  # rather than silently keeping the first one.
+  local -a words=()
+  while (( $# )); do
+    case "$1" in
+      --color) [[ -n "${2:-}" ]] || err "--color needs a value. Available: ${(k)HUES}"
+               color="$2"; shift 2 ;;
+      -*)      err "Unknown option '$1'. $usage" ;;
+      *)       words+=("$1"); shift ;;
+    esac
+  done
+  local raw="${(j: :)words}"
+  [[ -n "$raw" ]] || err "$usage"
   local slug display data_dir app_path claude_app
   slug=$(slugify "$raw")
   [[ -n "$slug" ]] || err "Name must contain at least one letter or digit."
   display=$(displayify "$slug")
+  # Same rule as the app's Add sheet: "Default" is the main install everywhere
+  # (the app, usage.tsv, lanes launch --best), so a profile can't take it.
+  [[ "$display" != "Default" ]] || err "\"Default\" is your main Claude. Pick another name."
   data_dir="$PROFILES_DIR/$display"
   app_path="$LAUNCHER_DIR/Claude $display.app"
   claude_app=$(find_claude_app)
@@ -801,6 +816,7 @@ cmd_launch() {
   # keep serving the default account under a profile's name.
   local raw="${1:-}"
   [[ -n "$raw" ]] || err "Usage: lanes launch <name> | lanes launch --best"
+  (( $# <= 1 )) || err "Too many arguments. Quote a name with spaces: lanes launch \"${(j: :)@}\""
   if [[ "$raw" == "--best" ]]; then
     raw=$(best_profile) ||
       err "No usage data to choose from. Open the Lanes app (menu bar) so it can load usage."
@@ -992,6 +1008,14 @@ cmd_watch() {
   done
 }
 
+# For values written into a plist by hand: a checkout under ~/code/R&D would
+# otherwise produce a plist launchctl refuses to load.
+xml_escape() {
+  local s="$1"
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
+  print -r -- "$s"
+}
+
 # Installs/removes the LaunchAgent that runs `lanes watch`. Idempotent: rewrites
 # and reloads only when the plist content changed or the agent isn't loaded;
 # --restart also restarts an up-to-date agent.
@@ -1003,11 +1027,11 @@ install_watchdog() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>Label</key><string>$WATCH_LABEL</string>
+	<key>Label</key><string>$(xml_escape "$WATCH_LABEL")</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/zsh</string>
-		<string>$SCRIPT_PATH</string>
+		<string>$(xml_escape "$SCRIPT_PATH")</string>
 		<string>watch</string>
 	</array>
 	<key>RunAtLoad</key><true/>
@@ -1348,6 +1372,9 @@ cmd_list() {
 cmd_remove() {
   local raw="${1:-}" mode="${2:-}"
   [[ -n "$raw" ]] || err "Usage: lanes remove <name> [--keep-data|--delete-data]"
+  # `lanes remove client acme` must not remove "Client"'s launcher.
+  [[ $# -le 2 && ( -z "$mode" || "$mode" == --keep-data || "$mode" == --delete-data ) ]] ||
+    err "Usage: lanes remove <name> [--keep-data|--delete-data]   (quote a name with spaces: \"client acme\")"
   local display data_dir app_path
   display=$(displayify "$(slugify "$raw")")
   data_dir="$PROFILES_DIR/$display"
