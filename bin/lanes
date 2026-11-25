@@ -26,7 +26,7 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-LANES_VERSION="0.8.0"
+LANES_VERSION="0.9.0"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
@@ -823,7 +823,9 @@ USAGE_TSV="$DATA_DIR/usage.tsv"
 USAGE_JSON="$DATA_DIR/usage.json"
 
 # Prints each profile as one tab-joined record without its header line; fields:
-# name color running 5h% 5h-reset 7d% 7d-reset error (empty = unknown).
+# name color running 5h% 5h-reset 7d% 7d-reset error 5h-runs-out 7d-runs-out
+# models stale-since (empty = unknown; times are epoch; models is
+# "Opus=12@<reset>,Sonnet=3@<reset>"). Older app versions write only the first 8.
 usage_records() {
   [[ -f "$USAGE_TSV" ]] || return 1
   local line
@@ -885,8 +887,9 @@ cmd_usage() {
     cat "$USAGE_JSON"
     return 0
   fi
-  local rec mark five week
-  local -a f
+  zmodload -F zsh/datetime b:strftime
+  local rec mark five week m label rest
+  local -a f notes
   printf "  %-14s %5s  %-12s %5s  %-12s\n" PROFILE 5H RESETS WEEK RESETS
   for rec in "${(@f)$(usage_records)}"; do
     [[ -n "$rec" ]] || continue
@@ -899,14 +902,76 @@ cmd_usage() {
     five=${f[4]:+${f[4]}%} week=${f[6]:+${f[6]}%}
     printf "%s %-14s %5s  %-12s %5s  %-12s\n" "$mark" "${f[1]}" "${five:-—}" "$(fmt_reset "${f[5]:-}")" \
       "${week:-—}" "$(fmt_reset "${f[7]:-}")"
+    # Weekly limits for single models, under the WEEK column.
+    for m in "${(@s:,:)${f[11]:-}}"; do
+      [[ -n "$m" ]] || continue
+      label=${m%%=*} rest=${m#*=}
+      printf "  %-14s %5s  %-12s %5s  %-12s\n" "  $label" "" "" "${rest%%@*}%" "$(fmt_reset "${rest#*@}")"
+    done
+    [[ -n "${f[9]:-}" ]] &&
+      notes+=("${f[1]}: at this pace, the 5-hour limit is used up around $(strftime "%H:%M" "${f[9]}")")
+    [[ -n "${f[10]:-}" ]] &&
+      notes+=("${f[1]}: at this pace, the weekly limit is used up around $(strftime "%a %H:%M" "${f[10]}")")
+    [[ -n "${f[12]:-}" ]] &&
+      notes+=("${f[1]}: the last check failed; these numbers are from $(strftime "%H:%M" "${f[12]}")")
   done
   local age; age=$(usage_age)
   print
+  for m in "${notes[@]}"; do warn "$m"; done
   if (( age > 1800 )); then
     warn "Updated $(( age / 60 )) min ago; is the Lanes app running?"
   else
     info "● running · updated $(( age / 60 )) min ago by the Lanes app"
   fi
+}
+
+# Usage history (what the drawer's chart draws) as CSV or JSON. The file
+# holds 30 days, one reading every ten minutes; JSON parsing goes through
+# JavaScript for Automation, which every Mac has.
+cmd_history() {
+  local profile="" days=30 fmt=csv
+  while (( $# )); do
+    case "$1" in
+      --days) [[ "${2:-}" == <1-> ]] || err "--days takes a number of days"; days=$2; shift 2 ;;
+      --json) fmt=json; shift ;;
+      --csv)  fmt=csv; shift ;;
+      -*)     err "Unknown option: $1 (try: lanes history [<name>] [--days N] [--json])" ;;
+      *)      profile=$1; shift ;;
+    esac
+  done
+  local file="$DATA_DIR/usage-history.json"
+  [[ -f "$file" ]] ||
+    err "No usage history yet. Open the Lanes app (menu bar): it records a reading every ten minutes."
+  local out
+  out=$(osascript -l JavaScript - "$file" "$profile" "$days" "$fmt" <<'JS'
+ObjC.import('Foundation')
+function run(argv) {
+  const [path, want, days, fmt] = argv
+  const text = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null).js
+  const all = JSON.parse(text)
+  let names = Object.keys(all).sort()
+  if (want) {
+    names = names.filter(n => n.toLowerCase() === want.toLowerCase())
+    if (!names.length) return `ERR:No history for '${want}'. Profiles with history: ${Object.keys(all).sort().join(', ')}`
+  }
+  const since = Date.now() / 1000 - Number(days) * 86400
+  const iso = t => new Date(t * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  const rows = {}
+  for (const n of names) {
+    rows[n] = all[n].filter(s => s.t >= since)
+      .map(s => ({ time: iso(s.t), fiveHour: s.h ?? null, weekly: s.w ?? null }))
+  }
+  if (fmt === 'json') return JSON.stringify(rows, null, 2)
+  const csv = v => (v === null ? '' : String(v))
+  const q = n => (/[",\n]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n)
+  const out = ['profile,time,five_hour,weekly']
+  for (const n of names) for (const r of rows[n]) out.push([q(n), r.time, csv(r.fiveHour), csv(r.weekly)].join(','))
+  return out.join('\n')
+}
+JS
+) || err "Couldn't read $file"
+  [[ "$out" != ERR:* ]] || err "${out#ERR:}"
+  print -r -- "$out"
 }
 
 cmd_watch() {
@@ -1335,6 +1400,8 @@ PROFILES
 USAGE
   lanes usage [--json]             5-hour and weekly usage with reset times,
                                    as last loaded by the Lanes menu bar app
+  lanes history [<name>] [--days N] [--json]
+                                   Up to 30 days of usage readings, as CSV
 
 MAINTENANCE
   lanes watchdog [install|uninstall|status]
@@ -1362,6 +1429,7 @@ case "${1:-help}" in
   color)   shift; cmd_color "$@" ;;
   list)    cmd_list ;;
   usage)   shift; cmd_usage "$@" ;;
+  history) shift; cmd_history "$@" ;;
   remove)  shift; cmd_remove "$@" ;;
   gui)     cmd_gui ;;
   chooser) shift; cmd_chooser "$@" ;;

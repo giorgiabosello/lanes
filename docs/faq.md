@@ -64,6 +64,10 @@ minutes left of a 5-hour window, the marker sits near 87%. A bar that ends
 before its marker means you're using the limit more slowly than time is
 passing.
 
+The fainter stretch past the end of a bar is the forecast: where usage
+will be when the limit resets, at the rate of the last hour (the last day,
+for the weekly meter).
+
 ### Where does "most room" come from?
 
 The profile with the lowest 5-hour usage, with the weekly limit breaking

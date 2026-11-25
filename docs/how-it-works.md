@@ -28,7 +28,7 @@ connectors. That folder is a profile. The rest of Lanes is about making
 │   └── Personal/
 ├── apps/                     ← per-profile clones of Claude.app
 ├── usage.json · usage.tsv    ← the latest usage, for the widget and CLI
-└── usage-history.json        ← a week of readings, for the chart
+└── usage-history.json        ← 30 days of readings, for the chart
 ```
 
 There's no registry, database or state file. The window, the menu bar, the
@@ -150,9 +150,33 @@ only read those files, so they cost no network calls and need no Keychain
 access. The widget is a sandboxed extension whose only file access is
 read-only access to that one folder.
 
+When a check fails for any reason other than a signed-out session (no
+network, claude.ai having a bad minute), the lane keeps the previous numbers
+for up to an hour, marked *As of 11:20*, rather than going blank. If every
+profile fails in a way that suggests the endpoint itself changed (a 404, a
+reply Lanes can't parse, no organization answering), the window and the
+panel say so and offer to check for a Lanes update.
+
+The same reply can carry weekly limits for a single model family, such as
+`seven_day_opus`. Lanes reads any `seven_day_*` limit that has a value and
+shows it in the lane's drawer, so a new one appears without an update.
+
 Every ten minutes or so, a reading also goes into `usage-history.json`,
-which keeps a week of them. That file drives the chart in each lane's
+which keeps 30 days of them. That file drives the chart in each lane's
 drawer.
+
+### Forecasts
+
+The forecast is a straight line through two points: the latest reading,
+and the oldest one from the last hour (the last day, for the weekly limit),
+counting only readings since the current window began, so the drop at the
+last reset never counts. It needs a reading at least 15 minutes old (3 hours
+for the weekly limit) before it says anything. Extended to the reset time,
+that line gives the faint part of each meter; where it crosses 100% before
+the reset, it gives *Used up ~15:40 at this pace*, `fiveHourRunsOut` in
+`usage.json`, and the pace alert. That alert fires once per window, when
+the 5-hour limit will run out within 45 minutes with at least 15 to spare,
+or the weekly one within a day with at least 6 hours to spare.
 
 ### Spotlight launchers
 

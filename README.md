@@ -21,7 +21,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/window-dark.png">
-    <img src="docs/images/window-light.png" width="820" alt="The Lanes window: four profiles as numbered lanes, each with its 5-hour and weekly usage; the Work lane is open, showing a week of usage history">
+    <img src="docs/images/window-light.png" width="820" alt="The Lanes window: four profiles as numbered lanes, each with its 5-hour and weekly usage; the Work lane is open, showing a week of usage history and a forecast that its 5-hour limit runs out before it resets">
   </picture>
 </p>
 
@@ -44,12 +44,19 @@ one with the most room.
 Each profile is a numbered lane, painted in its color. At a glance you see
 whether it's running, how much of its **5-hour** and **weekly** limits it has
 used, and when each one resets. Click a lane to open its drawer, which holds
-a week of usage history, where its data lives, its color, and removal.
+up to 30 days of usage history (by day, week or month, and exportable as
+CSV), any per-model weekly limits such as Opus, where its data lives, its
+color, and removal.
 
 The small mark on every meter is the **pace marker**: how much of that
 window has already passed. A bar that ends left of its marker is burning
 slower than the clock, so 85% used with 20 minutes to go is nothing to
 worry about.
+
+Lanes also works out where each limit is **heading**. From the last hour of
+readings (the last day, for the weekly limit) it draws a faint extension
+to where the bar will be at the reset, and says so in orange when the
+limit will run out first: *Used up ~15:40 at this pace*.
 
 ### The menu bar
 
@@ -74,9 +81,12 @@ Open it and the profile with the **most room** comes first: one click (or
 running. Below it, every lane with both meters. Click one to launch or focus
 it; right-click to change its color, find its data or remove it.
 
-**Alerts** arrive at 80% and 95% of a 5-hour limit. Once a limit passes 80%,
-another one lands the minute it resets, scheduled with macOS so it arrives
-even if Lanes has quit.
+**Alerts** arrive at 80% and 95% of the 5-hour and the weekly limit (both
+levels are yours to change in Settings), and name the profile with the most
+room. A **pace alert** warns you earlier, when a limit is on track to run
+out well before it resets. Once a limit passes the first level, another one
+lands the minute it resets, scheduled with macOS so it arrives even if Lanes
+has quit.
 
 <br clear="right">
 
@@ -109,8 +119,8 @@ whichever Claude happens to be running.
   countdowns. Click a profile to open it. Add it with *Edit Widgets…* and
   search for "Lanes".
 - **A command line**, `lanes`, for scripts and status lines:
-  `lanes usage --json`, `lanes launch --best`. See the
-  [reference](docs/cli.md).
+  `lanes usage --json`, `lanes launch --best`, `lanes history --days 7`.
+  See the [reference](docs/cli.md).
 - **Isolated Claude Code, too.** The Code and Cowork tabs in each profile
   get their own Claude Code config, so accounts never leak into each other
   or into your terminal `claude`.

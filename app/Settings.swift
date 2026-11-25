@@ -20,8 +20,23 @@ struct SettingsView: View {
                 }
                 Toggle(isOn: $store.alertsEnabled) {
                     described("Usage alerts",
-                              "At 80% and 95% of the 5-hour limit, and the minute a nearly used limit resets.")
+                              "When the 5-hour or weekly limit passes each level below, and the minute a limit past the first level resets.")
                 }
+                Group {
+                    Picker("First alert at", selection: $store.alertWarn) {
+                        ForEach(ProfileStore.warnLevels, id: \.self) { Text("\(Int($0))%").tag($0) }
+                    }
+                    Picker("Second alert at", selection: $store.alertUrgent) {
+                        ForEach(ProfileStore.urgentLevels.filter { $0 > store.alertWarn }, id: \.self) {
+                            Text("\(Int($0))%").tag($0)
+                        }
+                    }
+                    Toggle(isOn: $store.paceAlertsEnabled) {
+                        described("Warn when on pace to run out",
+                                  "When, at its recent rate, a limit will be used up well before it resets: within 45 minutes for the 5-hour limit, within a day for the weekly one.")
+                    }
+                }
+                .disabled(!store.alertsEnabled)
             } header: {
                 Text("Usage")
             }

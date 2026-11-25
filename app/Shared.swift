@@ -69,11 +69,13 @@ func elapsedFraction(reset: Date?, window: TimeInterval, now: Date = Date()) -> 
 }
 
 // A lane-style usage meter: a track, the used share in the profile's color
-// (orange/red near the limit), and an optional pace marker.
+// (orange/red near the limit), an optional pace marker, and an optional
+// projection: a faint extension to where usage will be when the limit resets.
 struct LaneMeter: View {
     let value: Double?
     let tint: Color
     var pace: Double? = nil
+    var projected: Double? = nil
     var height: CGFloat = 6
 
     private var fraction: Double { min(max((value ?? 0) / 100, 0), 1) }
@@ -83,6 +85,10 @@ struct LaneMeter: View {
             let w = geo.size.width
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.10))
+                if let projected, projected > (value ?? 0) + 1 {
+                    Capsule().fill(usageColor(projected, tint: tint).opacity(0.3))
+                        .frame(width: max(height, w * min(projected / 100, 1)))
+                }
                 if fraction > 0 {
                     Capsule().fill(usageColor(value, tint: tint))
                         .frame(width: max(height, w * fraction))
@@ -100,6 +106,16 @@ struct LaneMeter: View {
     }
 }
 
+// A weekly limit claude.ai reports for one model family on its own (e.g.
+// "seven_day_opus"), next to the overall 5-hour and weekly ones.
+struct ModelLimit: Codable, Equatable, Identifiable {
+    var key: String       // as claude.ai names it: "seven_day_opus"
+    var label: String     // "Opus"
+    var used: Double      // percent
+    var reset: Date?
+    var id: String { key }
+}
+
 // Written by the app after every usage refresh; read by the widget (sandboxed,
 // with a read-only exception for this folder) and by `lanes usage --json`.
 struct UsageSnapshot: Codable {
@@ -112,6 +128,12 @@ struct UsageSnapshot: Codable {
         var fiveHourReset: Date?
         var sevenDayReset: Date?
         var error: String?
+        // When each limit runs out at the current pace, if before it resets.
+        var fiveHourRunsOut: Date? = nil
+        var sevenDayRunsOut: Date? = nil
+        var limits: [ModelLimit]? = nil
+        // Set when the last check failed and these are the previous numbers.
+        var staleSince: Date? = nil
         var id: String { name }
     }
     var updated: Date

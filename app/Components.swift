@@ -101,13 +101,15 @@ struct LaneStripe: View {
     }
 }
 
-// "5H 42%" over a meter, with when the limit resets underneath.
+// "5H 42%" over a meter, with when the limit resets underneath, and (outside
+// compact mode) where it's heading at the current pace.
 struct MeterCell: View {
     let label: String
     let value: Double?
     let reset: Date?
     let window: TimeInterval
     let tint: Color
+    var forecast: Pace? = nil
     var compact = false
 
     var body: some View {
@@ -124,18 +126,51 @@ struct MeterCell: View {
             }
             LaneMeter(value: value, tint: tint,
                       pace: elapsedFraction(reset: reset, window: window),
+                      projected: forecast?.atReset,
                       height: compact ? 5 : 6)
             Text(resetText(reset) ?? " ")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
+            if !compact {
+                forecastLine
+            }
         }
         .help(paceHelp)
     }
 
+    // "Used up ~15:40 at this pace" when that's before the reset, otherwise
+    // "~72% at reset" when the projection is meaningfully above today's value.
+    @ViewBuilder private var forecastLine: some View {
+        Group {
+            if let out = forecast?.runsOutAt {
+                Text("Used up ~\(clockText(out)) at this pace")
+                    .foregroundStyle(Color.orange)
+            } else if let f = forecast, let v = value, f.atReset >= v + 3 {
+                Text("~\(Int(f.atReset.rounded()))% at reset, at this pace")
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(" ")
+            }
+        }
+        .font(.system(size: 10))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
+    }
+
     private var paceHelp: String {
-        guard let e = elapsedFraction(reset: reset, window: window) else { return "" }
-        return "The marker shows how much of this window has passed (\(Int((e * 100).rounded()))%). Usage left of it is on pace."
+        var lines: [String] = []
+        if let e = elapsedFraction(reset: reset, window: window) {
+            lines.append("The marker shows how much of this window has passed (\(Int((e * 100).rounded()))%). Usage left of it is on pace.")
+        }
+        if let f = forecast {
+            if let out = f.runsOutAt {
+                lines.append("At the current rate this limit is used up around \(clockText(out)), before it resets.")
+            } else {
+                lines.append("At the current rate it reaches about \(Int(f.atReset.rounded()))% by the reset (the faint part of the bar).")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -180,16 +215,67 @@ struct UsagePair: View {
 
     var body: some View {
         if let u = usage, u.error == nil, !u.hasNoData {
-            HStack(alignment: .top, spacing: spacing) {
-                MeterCell(label: "5 hours", value: u.fiveHour, reset: u.fiveHourReset,
-                          window: LimitWindow.fiveHour, tint: tint, compact: compact)
-                MeterCell(label: "Week", value: u.sevenDay, reset: u.sevenDayReset,
-                          window: LimitWindow.week, tint: tint, compact: compact)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: spacing) {
+                    MeterCell(label: "5 hours", value: u.fiveHour, reset: u.fiveHourReset,
+                              window: LimitWindow.fiveHour, tint: tint, forecast: u.fiveHourPace, compact: compact)
+                    MeterCell(label: "Week", value: u.sevenDay, reset: u.sevenDayReset,
+                              window: LimitWindow.week, tint: tint, forecast: u.sevenDayPace, compact: compact)
+                }
+                if let since = u.staleSince {
+                    StaleNote(since: since, error: u.staleError)
+                }
             }
         } else {
             LaneNote(usage: usage)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+// Under meters that show the previous numbers because the last check failed.
+struct StaleNote: View {
+    let since: Date
+    let error: String?
+
+    var body: some View {
+        Label("As of \(clockText(since)): couldn't refresh", systemImage: "exclamationmark.arrow.circlepath")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .help(error.map { "The last usage check failed (\($0)). Lanes keeps showing the previous numbers for up to an hour." } ?? "")
+    }
+}
+
+// Shown when every profile's usage check fails in a way that suggests
+// claude.ai changed its usage endpoint, which only a Lanes update can fix.
+struct UsageBrokenBanner: View {
+    @ObservedObject var store: ProfileStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Lanes can't read usage from claude.ai")
+                    .font(.callout.weight(.semibold))
+                Text("claude.ai may have changed how it reports usage. Launching profiles still works; a Lanes update usually brings the numbers back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            if let v = store.availableUpdate {
+                Button(store.isUpdating ? "Updating…" : "Install \(v)") { store.installUpdate() }
+                    .disabled(store.isUpdating)
+            } else {
+                Button(store.isCheckingForUpdate ? "Checking…" : "Check for Update") { store.checkForUpdate() }
+                    .disabled(store.isCheckingForUpdate)
+            }
+        }
+        .controlSize(.small)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.1)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.25)))
     }
 }
 

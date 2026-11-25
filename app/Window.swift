@@ -50,6 +50,11 @@ struct LanesWindow: View {
         VStack(spacing: 0) {
             header
             ScrollView {
+                if store.usageLooksBroken {
+                    UsageBrokenBanner(store: store)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 8)
+                }
                 track
                     .padding(.horizontal, 20)
                     .padding(.bottom, 20)
@@ -172,9 +177,12 @@ struct LanesWindow: View {
                     LaneDetail(
                         profile: p,
                         history: store.history[p.name] ?? [],
+                        models: store.usage[p.id]?.models ?? [],
+                        alertAt: store.alertWarn,
                         version: store.claudeVersion(of: p),
                         dataPath: store.dataPath(of: p),
                         reveal: { store.revealData(p) },
+                        export: { store.exportHistory(p) },
                         setColor: p.isDefault ? nil : { store.setColor(p, color: $0) },
                         remove: p.isDefault ? nil : { removing = p }
                     )
@@ -330,26 +338,55 @@ struct LaneRow<Detail: View>: View {
 
 // MARK: - Lane drawer
 
+// How far back the drawer's chart looks.
+enum HistoryRange: String, CaseIterable, Identifiable {
+    case day = "Day", week = "Week", month = "Month"
+    var id: String { rawValue }
+    var span: TimeInterval {
+        switch self {
+        case .day: return 86400
+        case .week: return 7 * 86400
+        case .month: return UsageHistory.keep
+        }
+    }
+}
+
 struct LaneDetail: View {
     let profile: Profile
     let history: [UsageSample]
+    var models: [ModelLimit] = []
+    var alertAt: Double = 80
     let version: String?
     let dataPath: String
     let reveal: () -> Void
+    var export: (() -> Void)? = nil
     let setColor: ((String) -> Void)?
     let remove: (() -> Void)?
+    @State private var range: HistoryRange = .week
 
     private var tint: Color { profile.color.swatch }
 
     var body: some View {
         HStack(alignment: .top, spacing: 28) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    SectionLabel("Last 7 days")
+                HStack(alignment: .center, spacing: 10) {
+                    Picker("Range", selection: $range) {
+                        ForEach(HistoryRange.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
                     Spacer()
                     legend
+                    if let export {
+                        Button(action: export) { Image(systemName: "square.and.arrow.up") }
+                            .buttonStyle(.borderless)
+                            .disabled(history.isEmpty)
+                            .help("Export the last 30 days as CSV")
+                    }
                 }
-                UsageHistoryChart(samples: history, tint: tint)
+                UsageHistoryChart(samples: history, tint: tint, range: range, alertAt: alertAt)
                     .frame(height: 118)
             }
             .frame(maxWidth: .infinity)
@@ -373,6 +410,27 @@ struct LaneDetail: View {
                     Text(version.map { "Version \($0)" }
                          ?? (profile.isDefault ? "Not installed" : "Set up on first launch"))
                 }
+                if !models.isEmpty {
+                    fact("Weekly, per model") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(models) { m in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(m.label)
+                                        Spacer()
+                                        Text("\(Int(m.used.rounded()))%")
+                                            .monospacedDigit()
+                                            .foregroundStyle(m.used >= 75 ? usageColor(m.used, tint: tint) : .primary)
+                                    }
+                                    .font(.caption)
+                                    LaneMeter(value: m.used, tint: tint,
+                                              pace: elapsedFraction(reset: m.reset, window: LimitWindow.week), height: 4)
+                                }
+                                .help(resetText(m.reset).map { "\(m.label): its own weekly limit, \($0)." } ?? "")
+                            }
+                        }
+                    }
+                }
                 if let setColor {
                     fact("Color") {
                         ColorSwatches(selected: profile.colorName, size: 16, pick: setColor)
@@ -393,7 +451,7 @@ struct LaneDetail: View {
 
     private var legend: some View {
         HStack(spacing: 12) {
-            legendItem("5 hours") { Capsule().fill(tint).frame(width: 12, height: 3) }
+            legendItem(range == .month ? "5-hour peak" : "5 hours") { Capsule().fill(tint).frame(width: 12, height: 3) }
             legendItem("Week") {
                 LaneMarking(opacity: 0.6).frame(width: 12)
             }
@@ -415,22 +473,43 @@ struct LaneDetail: View {
     }
 }
 
-// 5-hour usage as a filled line in the lane's color, the weekly limit as a
-// dashed line, and the 80% alert threshold as a faint rule.
+// Day and week: 5-hour usage as a filled line in the lane's color, the weekly
+// limit as a dashed line. Month: one bar per day for that day's 5-hour peak,
+// and the weekly limit's daily high as a dashed line. Both draw the first
+// alert level as a faint rule.
 struct UsageHistoryChart: View {
     let samples: [UsageSample]
     let tint: Color
+    var range: HistoryRange = .week
+    var alertAt: Double = 80
 
-    // English day names, like the rest of the app.
-    private static let weekday: DateFormatter = {
+    // English names, like the rest of the app.
+    private static func formatter(_ format: String) -> DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE"
+        f.dateFormat = format
         return f
-    }()
+    }
+    private static let weekday = formatter("EEE")
+    private static let hour = formatter("HH:mm")
+    private static let dayMonth = formatter("d MMM")
+
+    struct DayPeak: Identifiable {
+        let day: Date
+        let h: Double?
+        let w: Double?
+        var id: Date { day }
+    }
+
+    static func dailyPeaks(_ pts: [UsageSample]) -> [DayPeak] {
+        let cal = Calendar.current
+        return Dictionary(grouping: pts) { cal.startOfDay(for: $0.t) }
+            .map { day, s in DayPeak(day: day, h: s.compactMap(\.h).max(), w: s.compactMap(\.w).max()) }
+            .sorted { $0.day < $1.day }
+    }
 
     var body: some View {
-        let start = Date().addingTimeInterval(-UsageHistory.keep)
+        let start = Date().addingTimeInterval(-range.span)
         let pts = samples.filter { $0.t >= start && ($0.h != nil || $0.w != nil) }
         if pts.count < 2 {
             VStack(spacing: 6) {
@@ -442,38 +521,92 @@ struct UsageHistoryChart: View {
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        } else if range == .month {
+            monthChart(Self.dailyPeaks(pts), start: start)
         } else {
-            Chart {
-                RuleMark(y: .value("Alert", 80))
-                    .foregroundStyle(Color.primary.opacity(0.18))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                ForEach(pts, id: \.t) { s in
-                    if let h = s.h {
-                        AreaMark(x: .value("Time", s.t), y: .value("5 hours", h))
-                            .foregroundStyle(LinearGradient(colors: [tint.opacity(0.35), tint.opacity(0.02)],
-                                                            startPoint: .top, endPoint: .bottom))
-                            .interpolationMethod(.monotone)
-                        LineMark(x: .value("Time", s.t), y: .value("5 hours", h), series: .value("Limit", "5 hours"))
-                            .foregroundStyle(tint)
-                            .lineStyle(StrokeStyle(lineWidth: 1.6))
-                            .interpolationMethod(.monotone)
-                    }
-                    if let w = s.w {
-                        LineMark(x: .value("Time", s.t), y: .value("Week", w), series: .value("Limit", "Week"))
-                            .foregroundStyle(Color.primary.opacity(0.55))
-                            .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
-                    }
+            lineChart(pts, start: start)
+        }
+    }
+
+    private var yAxis: some AxisContent {
+        AxisMarks(position: .leading, values: [0, 50, 100]) { v in
+            AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+            AxisValueLabel { Text("\(v.as(Int.self) ?? 0)%").font(.system(size: 9)) }
+        }
+    }
+
+    private var alertRule: some ChartContent {
+        RuleMark(y: .value("Alert", alertAt))
+            .foregroundStyle(Color.primary.opacity(0.18))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+    }
+
+    private func monthChart(_ days: [DayPeak], start: Date) -> some View {
+        let cal = Calendar.current
+        // Through the end of today, so today's bar isn't cut in half.
+        let from = cal.startOfDay(for: max(start, days[0].day))
+        let to = cal.startOfDay(for: Date()).addingTimeInterval(86400)
+        return Chart {
+            alertRule
+            ForEach(days) { d in
+                if let h = d.h {
+                    BarMark(x: .value("Day", d.day, unit: .day), y: .value("5-hour peak", h))
+                        .foregroundStyle(usageColor(h, tint: tint).opacity(0.85))
+                        .cornerRadius(2)
+                }
+                if let w = d.w {
+                    LineMark(x: .value("Day", d.day, unit: .day), y: .value("Week", w), series: .value("Limit", "Week"))
+                        .foregroundStyle(Color.primary.opacity(0.55))
+                        .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
                 }
             }
-            .chartYScale(domain: 0...100)
-            .chartXScale(domain: max(start, pts[0].t)...Date())
-            .chartYAxis {
-                AxisMarks(position: .leading, values: [0, 50, 100]) { v in
-                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                    AxisValueLabel { Text("\(v.as(Int.self) ?? 0)%").font(.system(size: 9)) }
+        }
+        .chartYScale(domain: 0...100)
+        .chartXScale(domain: from...to)
+        .chartYAxis { yAxis }
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .day, count: 7)) { v in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                AxisValueLabel {
+                    if let d = v.as(Date.self) { Text(Self.dayMonth.string(from: d)).font(.system(size: 9)) }
                 }
             }
-            .chartXAxis {
+        }
+    }
+
+    private func lineChart(_ pts: [UsageSample], start: Date) -> some View {
+        Chart {
+            alertRule
+            ForEach(pts, id: \.t) { s in
+                if let h = s.h {
+                    AreaMark(x: .value("Time", s.t), y: .value("5 hours", h))
+                        .foregroundStyle(LinearGradient(colors: [tint.opacity(0.35), tint.opacity(0.02)],
+                                                        startPoint: .top, endPoint: .bottom))
+                        .interpolationMethod(.monotone)
+                    LineMark(x: .value("Time", s.t), y: .value("5 hours", h), series: .value("Limit", "5 hours"))
+                        .foregroundStyle(tint)
+                        .lineStyle(StrokeStyle(lineWidth: 1.6))
+                        .interpolationMethod(.monotone)
+                }
+                if let w = s.w {
+                    LineMark(x: .value("Time", s.t), y: .value("Week", w), series: .value("Limit", "Week"))
+                        .foregroundStyle(Color.primary.opacity(0.55))
+                        .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                }
+            }
+        }
+        .chartYScale(domain: 0...100)
+        .chartXScale(domain: max(start, pts[0].t)...Date())
+        .chartYAxis { yAxis }
+        .chartXAxis {
+            if range == .day {
+                AxisMarks(values: .stride(by: .hour, count: 6)) { v in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                    AxisValueLabel {
+                        if let d = v.as(Date.self) { Text(Self.hour.string(from: d)).font(.system(size: 9)) }
+                    }
+                }
+            } else {
                 AxisMarks(values: .stride(by: .day)) { v in
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
                     AxisValueLabel(centered: true) {

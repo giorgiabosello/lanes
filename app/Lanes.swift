@@ -21,6 +21,7 @@ import UserNotifications
 import ServiceManagement
 import Carbon.HIToolbox
 import WidgetKit
+import UniformTypeIdentifiers
 
 // MARK: - Shared helpers
 
@@ -94,9 +95,27 @@ struct Usage: Equatable {
     var fiveHourReset: Date?
     var sevenDayReset: Date?
     var error: String?
+    // Weekly limits for single model families, when the account has them.
+    var models: [ModelLimit] = []
+    // Where each limit is heading at the current rate (see Forecast).
+    var fiveHourPace: Pace? = nil
+    var sevenDayPace: Pace? = nil
+    // The last check failed (staleError), so these are the numbers from
+    // staleSince: still shown, for up to an hour, rather than blanked.
+    var staleError: String? = nil
+    var staleSince: Date? = nil
+    // The failure looks like claude.ai changed its usage endpoint rather than
+    // a network hiccup: drives the "can't read usage" banner.
+    var formatChanged = false
 
     var needsSignIn: Bool { error == "not signed in" || error == "session expired" }
     var hasNoData: Bool { error == nil && fiveHour == nil && sevenDay == nil }
+}
+
+// Where a limit is heading if usage keeps its recent rate.
+struct Pace: Equatable {
+    var atReset: Double     // projected percent when the window resets (capped at 100)
+    var runsOutAt: Date?    // when it hits 100%, if that's before the reset
 }
 
 // "resets in 2h 10m" within a day, "resets Mon 09:30" beyond that.
@@ -109,11 +128,23 @@ func resetText(_ date: Date?) -> String? {
         let h = Int(secs) / 3600, m = (Int(secs) % 3600) / 60
         return m == 0 ? "resets in \(h)h" : "resets in \(h)h \(m)m"
     }
+    return "resets " + clockText(date)
+}
+
+// "15:40" today, "Thu 15:40" on another day. English day names, like the rest
+// of the app, whatever the system locale.
+func clockText(_ date: Date) -> String {
     let f = DateFormatter()
-    // English day names, like the rest of the app, whatever the system locale.
     f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = "EEE HH:mm"
-    return "resets " + f.string(from: date)
+    f.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
+    return f.string(from: date)
+}
+
+// "Opus" for "seven_day_opus".
+private func modelLimitLabel(_ key: String) -> String {
+    let suffix = String(key.dropFirst("seven_day_".count))
+    let known = ["opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku", "oauth_apps": "Apps"]
+    return known[suffix] ?? suffix.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
 }
 
 private func parseISODate(_ v: Any?) -> Date? {
@@ -156,8 +187,15 @@ private func decryptCookie(_ blob: Data, key: Data) -> String? {
     return String(data: plain.dropFirst(32), encoding: .utf8)
 }
 
-private func usageError(_ m: String) -> NSError {
-    NSError(domain: "usage", code: 1, userInfo: [NSLocalizedDescriptionKey: m])
+// Code 2 marks a failure that points at claude.ai's side having changed (an
+// endpoint gone, a reply in another shape) rather than at this Mac.
+private func usageError(_ m: String, formatChanged: Bool = false) -> NSError {
+    NSError(domain: "usage", code: formatChanged ? 2 : 1, userInfo: [NSLocalizedDescriptionKey: m])
+}
+
+func isFormatError(_ error: Error) -> Bool {
+    let ns = error as NSError
+    return (ns.domain == "usage" && ns.code == 2) || ns.domain == NSCocoaErrorDomain
 }
 
 private func claudeCookieHeader(dataDir: String) throws -> String {
@@ -203,7 +241,9 @@ func fetchUsage(dataDir: String) async throws -> Usage {
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, resp) = try await URLSession.shared.data(for: r)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw usageError(code == 401 || code == 403 ? "session expired" : "HTTP \(code)") }
+        guard code == 200 else {
+            throw usageError(code == 401 || code == 403 ? "session expired" : "HTTP \(code)", formatChanged: code == 404)
+        }
         return try JSONSerialization.jsonObject(with: data)
     }
     guard let orgs = try await get("/organizations") as? [[String: Any]], !orgs.isEmpty
@@ -222,14 +262,22 @@ func fetchUsage(dataDir: String) async throws -> Usage {
               let j = try? await get("/organizations/\(id)/usage") as? [String: Any] else { continue }
         func pct(_ k: String) -> Double? { number((j[k] as? [String: Any])?["utilization"]) }
         func reset(_ k: String) -> Date? { parseISODate((j[k] as? [String: Any])?["resets_at"]) }
+        // Per-model weekly limits ("seven_day_opus", …), read generically so a
+        // new model family shows up without a Lanes update. Null when unused.
+        let models = j.keys.sorted().filter { $0.hasPrefix("seven_day_") }.compactMap { k -> ModelLimit? in
+            guard let v = pct(k) else { return nil }
+            return ModelLimit(key: k, label: modelLimitLabel(k), used: v, reset: reset(k))
+        }
         let u = Usage(fiveHour: pct("five_hour"), sevenDay: pct("seven_day"),
-                      fiveHourReset: reset("five_hour"), sevenDayReset: reset("seven_day"), error: nil)
+                      fiveHourReset: reset("five_hour"), sevenDayReset: reset("seven_day"), error: nil,
+                      models: models)
         raw.append(["org": id, "name": o["name"] ?? "", "capabilities": o["capabilities"] ?? [], "usage": j])
         if u.fiveHour != nil || u.sevenDay != nil { return u }
         best = best ?? u
     }
     writeUsageDebug(dataDir: dataDir, raw: raw)
-    return best ?? Usage(fiveHour: nil, sevenDay: nil, error: "unexpected response")
+    // Not one organization answered: the endpoint itself is likely gone.
+    return best ?? Usage(fiveHour: nil, sevenDay: nil, error: "unexpected response", formatChanged: true)
 }
 
 // When no organization reports usage, keep the raw replies (no cookies) so the
@@ -364,6 +412,23 @@ final class ProfileStore: ObservableObject {
             if alertsEnabled { Notifier.shared.setUp() }
         }
     }
+    // The two alert levels, in percent of a limit. The second is kept above the first.
+    static let warnLevels: [Double] = [50, 60, 70, 75, 80, 85, 90]
+    static let urgentLevels: [Double] = [80, 85, 90, 95, 98]
+    @Published var alertWarn: Double = UserDefaults.standard.object(forKey: "alertWarn") as? Double ?? 80 {
+        didSet {
+            UserDefaults.standard.set(alertWarn, forKey: "alertWarn")
+            if alertUrgent <= alertWarn {
+                alertUrgent = Self.urgentLevels.first { $0 > alertWarn } ?? 98
+            }
+        }
+    }
+    @Published var alertUrgent: Double = UserDefaults.standard.object(forKey: "alertUrgent") as? Double ?? 95 {
+        didSet { UserDefaults.standard.set(alertUrgent, forKey: "alertUrgent") }
+    }
+    @Published var paceAlertsEnabled = UserDefaults.standard.object(forKey: "paceAlertsEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(paceAlertsEnabled, forKey: "paceAlertsEnabled") }
+    }
     @Published var shortcutEnabled = UserDefaults.standard.object(forKey: "shortcutEnabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(shortcutEnabled, forKey: "shortcutEnabled")
@@ -411,8 +476,14 @@ final class ProfileStore: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    // Last alert level sent per profile for the 5-hour limit: 0 below 80%, 1 from 80%, 2 from 95%.
+    // Last alert level sent per profile and limit ("Work/5h", "Work/7d"):
+    // 0 below the first level, 1 from it, 2 from the second.
     private var alertLevel: [String: Int] = [:]
+    // The reset (epoch) each pace alert was sent for, per "Work/5h": one per
+    // window. Persisted so relaunching Lanes doesn't repeat it.
+    private var paceAlerted: [String: Double] = UserDefaults.standard.dictionary(forKey: "paceAlerted") as? [String: Double] ?? [:] {
+        didSet { UserDefaults.standard.set(paceAlerted, forKey: "paceAlerted") }
+    }
 
     // Owned by the store (not a view) so the menu bar stays live with the window closed.
     private var timers: [Timer] = []
@@ -534,7 +605,10 @@ final class ProfileStore: ObservableObject {
             for (id, dir) in targets {
                 let u: Usage
                 do { u = try await fetchUsage(dataDir: dir) }
-                catch { u = Usage(fiveHour: nil, sevenDay: nil, error: error.localizedDescription) }
+                catch {
+                    u = Usage(fiveHour: nil, sevenDay: nil, error: error.localizedDescription,
+                              formatChanged: isFormatError(error))
+                }
                 await MainActor.run { self.apply(u, for: id) }
             }
             await MainActor.run {
@@ -545,38 +619,114 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-    private func apply(_ u: Usage, for id: String) {
-        if usage[id] != u { usage[id] = u }
-        scheduleResetAlerts(u, for: id)
-        guard let v = u.fiveHour else { return }
-        let level = v >= 95 ? 2 : (v >= 80 ? 1 : 0)
-        // First sample after launch only records the level, so restarting the
-        // app at 85% doesn't fire a stale alert.
-        guard let prev = alertLevel[id] else { alertLevel[id] = level; return }
-        if level > prev {
-            alertLevel[id] = level
-            if alertsEnabled {
-                var body = "\(Int(v.rounded()))% of the 5-hour limit used."
-                if let r = resetText(u.fiveHourReset) { body += " Limit \(r)." }
-                Notifier.shared.post(title: "\(id): \(level == 2 ? "almost at the limit" : "getting close to the limit")", body: body)
+    // How long a failed check may keep showing the previous numbers.
+    private static let staleGrace: TimeInterval = 3600
+
+    private func apply(_ fresh: Usage, for id: String) {
+        var u = fresh
+        if u.error == nil {
+            let samples = history[id] ?? []
+            u.fiveHourPace = Forecast.pace(value: u.fiveHour, reset: u.fiveHourReset, window: LimitWindow.fiveHour,
+                                           samples: samples.compactMap { s in s.h.map { (s.t, $0) } },
+                                           lookback: 3600, minSpan: 15 * 60)
+            u.sevenDayPace = Forecast.pace(value: u.sevenDay, reset: u.sevenDayReset, window: LimitWindow.week,
+                                           samples: samples.compactMap { s in s.w.map { (s.t, $0) } },
+                                           lookback: 86400, minSpan: 3 * 3600)
+        } else if !u.needsSignIn, let prev = usage[id], prev.error == nil, !prev.hasNoData {
+            // A failed check (network, claude.ai having a moment) keeps the
+            // last numbers for a while, marked as stale, instead of blanking
+            // the lane. Signing out still clears it at once.
+            let since = prev.staleSince ?? lastUsageUpdate ?? Date()
+            if Date().timeIntervalSince(since) < Self.staleGrace {
+                u = prev
+                u.staleError = fresh.error
+                u.staleSince = since
+                u.formatChanged = fresh.formatChanged
             }
-        } else if level < prev {
-            alertLevel[id] = level
+        }
+        if usage[id] != u { usage[id] = u }
+        guard u.staleError == nil else { return }
+        scheduleResetAlerts(u, for: id)
+        thresholdAlerts(u, for: id)
+        paceAlerts(u, for: id)
+    }
+
+    private func limits(_ u: Usage) -> [(key: String, label: String, value: Double?, reset: Date?, pace: Pace?)] {
+        [("5h", "5-hour limit", u.fiveHour, u.fiveHourReset, u.fiveHourPace),
+         ("7d", "weekly limit", u.sevenDay, u.sevenDayReset, u.sevenDayPace)]
+    }
+
+    // " Most room: Personal (88% left)." when another profile is a better bet.
+    private func alternative(to id: String) -> String {
+        guard let b = bestProfile(), b.id != id, let h = usage[b.id]?.fiveHour, h < 50 else { return "" }
+        return " Most room: \(b.name) (\(max(0, 100 - Int(h.rounded())))% left)."
+    }
+
+    // An alert when a limit crosses the first or second level, for the
+    // 5-hour and the weekly limit alike.
+    private func thresholdAlerts(_ u: Usage, for id: String) {
+        for l in limits(u) {
+            guard let v = l.value else { continue }
+            let level = v >= alertUrgent ? 2 : (v >= alertWarn ? 1 : 0)
+            let key = "\(id)/\(l.key)"
+            // First sample after launch only records the level, so restarting the
+            // app at 85% doesn't fire a stale alert.
+            guard let prev = alertLevel[key] else { alertLevel[key] = level; continue }
+            alertLevel[key] = level
+            guard level > prev, alertsEnabled else { continue }
+            var body = "\(Int(v.rounded()))% of the \(l.label) used."
+            if let r = resetText(l.reset) { body += " Limit \(r)." }
+            body += alternative(to: id)
+            Notifier.shared.post(title: "\(id): \(level == 2 ? "almost at" : "getting close to") the \(l.label)",
+                                 body: body)
         }
     }
 
-    // A limit that's nearly used up gets a notification at its exact reset
-    // time, scheduled with the system so it fires even if this app has quit.
-    // Re-scheduled on every refresh (same identifier), so a moved reset time
-    // or a drop back under 80% is picked up.
+    // A heads-up when a limit, at its recent rate, will be used up well
+    // before it resets: within 45 minutes for the 5-hour limit (with at least
+    // 15 to spare), within a day for the weekly one (with at least 6 hours to
+    // spare). Once per window.
+    private func paceAlerts(_ u: Usage, for id: String) {
+        guard alertsEnabled, paceAlertsEnabled else { return }
+        let now = Date()
+        for l in limits(u) {
+            guard let v = l.value, v < alertUrgent, let reset = l.reset, let out = l.pace?.runsOutAt else { continue }
+            let weekly = l.key == "7d"
+            let soon: TimeInterval = weekly ? 86400 : 45 * 60
+            let spare: TimeInterval = weekly ? 6 * 3600 : 15 * 60
+            guard out.timeIntervalSince(now) <= soon, reset.timeIntervalSince(out) >= spare else { continue }
+            let key = "\(id)/\(l.key)"
+            // The same window, even if claude.ai nudged its reset time a little.
+            if let sent = paceAlerted[key], abs(sent - reset.timeIntervalSince1970) < 3600 { continue }
+            paceAlerted[key] = reset.timeIntervalSince1970
+            let early = Int(reset.timeIntervalSince(out))
+            let gap = early >= 86400 ? "\(early / 86400) day\(early >= 2 * 86400 ? "s" : "")"
+                : early >= 3600 ? "\(early / 3600)h \(early % 3600 / 60)m" : "\(early / 60) min"
+            Notifier.shared.post(
+                title: "\(id) is on pace to run out",
+                body: "At this rate, the \(l.label) is used up around \(clockText(out)), \(gap) before it resets."
+                    + alternative(to: id))
+        }
+        // Forget windows that have long reset.
+        let cutoff = now.timeIntervalSince1970 - 86400
+        if paceAlerted.values.contains(where: { $0 < cutoff }) { paceAlerted = paceAlerted.filter { $0.value >= cutoff } }
+    }
+
+    // Every profile that should report usage fails in a way that points at
+    // claude.ai having changed its usage endpoint, not at a network blip.
+    var usageLooksBroken: Bool {
+        let us = profiles.compactMap { usage[$0.id] }.filter { !$0.needsSignIn && !$0.hasNoData }
+        return !us.isEmpty && us.allSatisfy { ($0.error != nil || $0.staleError != nil) && $0.formatChanged }
+    }
+
+    // A limit that's nearly used up (past the first alert level) gets a
+    // notification at its exact reset time, scheduled with the system so it
+    // fires even if this app has quit. Re-scheduled on every refresh (same
+    // identifier), so a moved reset time or a drop back under it is picked up.
     private func scheduleResetAlerts(_ u: Usage, for id: String) {
-        let limits: [(key: String, label: String, value: Double?, reset: Date?)] = [
-            ("5h", "5-hour limit", u.fiveHour, u.fiveHourReset),
-            ("7d", "weekly limit", u.sevenDay, u.sevenDayReset),
-        ]
-        for l in limits {
+        for l in limits(u) {
             let ident = "reset-\(l.key)-\(id)"
-            guard alertsEnabled, let v = l.value, v >= 80, let r = l.reset, r > Date() else {
+            guard alertsEnabled, let v = l.value, v >= alertWarn, let r = l.reset, r > Date() else {
                 Notifier.shared.cancel([ident]); continue
             }
             Notifier.shared.schedule(ident, at: r, title: "\(id): \(l.label) reset",
@@ -594,7 +744,10 @@ final class ProfileStore: ObservableObject {
             let u = usage[p.id]
             return .init(name: p.name, color: p.colorName, running: running.contains(p.id),
                          fiveHour: u?.fiveHour, sevenDay: u?.sevenDay,
-                         fiveHourReset: u?.fiveHourReset, sevenDayReset: u?.sevenDayReset, error: u?.error)
+                         fiveHourReset: u?.fiveHourReset, sevenDayReset: u?.sevenDayReset, error: u?.error,
+                         fiveHourRunsOut: u?.fiveHourPace?.runsOutAt, sevenDayRunsOut: u?.sevenDayPace?.runsOutAt,
+                         limits: u.flatMap { $0.models.isEmpty ? nil : $0.models },
+                         staleSince: u?.staleSince)
         }
         let dir = UsageSnapshot.directory
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -602,19 +755,29 @@ final class ProfileStore: ObservableObject {
             try? data.write(to: URL(fileURLWithPath: UsageSnapshot.path), options: .atomic)
         }
         // One line per profile, tab-separated, for the shell: name color running
-        // 5h% 5h-reset 7d% 7d-reset error. Empty field = unknown; times are epoch.
+        // 5h% 5h-reset 7d% 7d-reset error 5h-runs-out 7d-runs-out models stale-since.
+        // Empty field = unknown; times are epoch; models is
+        // "Opus=12@<reset>,Sonnet=3@<reset>". New columns only ever go at the end.
         func n(_ v: Double?) -> String { v.map { String(Int($0.rounded())) } ?? "" }
         func t(_ d: Date?) -> String { d.map { String(Int($0.timeIntervalSince1970)) } ?? "" }
+        func clean(_ s: String) -> String {
+            s.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+        }
         var tsv = "# updated \(Int(now.timeIntervalSince1970))\n"
         for e in entries {
-            let err = (e.error ?? "").replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+            let models = (e.limits ?? []).map {
+                clean($0.label).replacingOccurrences(of: ",", with: " ") + "=" + n($0.used) + "@" + t($0.reset)
+            }.joined(separator: ",")
             tsv += [e.name, e.color, e.running ? "1" : "0", n(e.fiveHour), t(e.fiveHourReset),
-                    n(e.sevenDay), t(e.sevenDayReset), err].joined(separator: "\t") + "\n"
+                    n(e.sevenDay), t(e.sevenDayReset), clean(e.error ?? ""),
+                    t(e.fiveHourRunsOut), t(e.sevenDayRunsOut), models, t(e.staleSince)]
+                .joined(separator: "\t") + "\n"
         }
         try? tsv.write(toFile: dir + "/usage.tsv", atomically: true, encoding: .utf8)
 
+        // Stale numbers are a repeat of an older reading, not a new one.
         var h = history
-        for e in entries where e.error == nil && (e.fiveHour != nil || e.sevenDay != nil) {
+        for e in entries where e.error == nil && e.staleSince == nil && (e.fiveHour != nil || e.sevenDay != nil) {
             UsageHistory.append(UsageSample(t: now, h: e.fiveHour, w: e.sevenDay), to: &h[e.name, default: []])
         }
         UsageHistory.prune(&h, profiles: Set(entries.map(\.name)))
@@ -794,6 +957,18 @@ final class ProfileStore: ObservableObject {
 
     func revealData(_ p: Profile) {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dataPath(of: p))
+    }
+
+    // Saves a profile's usage history as CSV wherever the user picks.
+    func exportHistory(_ p: Profile) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Lanes \(p.name) usage.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.message = "The last 30 days of \(p.name)'s usage, one reading every ten minutes."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try UsageHistory.csv(history[p.name] ?? []).write(to: url, atomically: true, encoding: .utf8) }
+        catch { errorMessage = error.localizedDescription }
     }
 
     // MARK: claude:// link routing
@@ -1051,10 +1226,11 @@ struct UsageSample: Codable, Equatable {
     var w: Double?   // weekly %
 }
 
-// A week of readings per profile in usage-history.json, at most one every
-// ~10 minutes whatever the refresh interval. Local only, never sent anywhere.
+// 30 days of readings per profile in usage-history.json, at most one every
+// ~10 minutes whatever the refresh interval (about 200 KB per profile).
+// Local only, never sent anywhere.
 enum UsageHistory {
-    static let keep: TimeInterval = 7 * 86400
+    static let keep: TimeInterval = 30 * 86400
     static var path: String { UsageSnapshot.directory + "/usage-history.json" }
 
     static func load() -> [String: [UsageSample]] {
@@ -1081,5 +1257,35 @@ enum UsageHistory {
             if !profiles.contains(k) { h[k] = nil; continue }
             h[k]?.removeAll { $0.t < cutoff }
         }
+    }
+
+    // time,five_hour,weekly: ISO 8601 UTC times, empty when unknown.
+    // Same columns as `lanes history`, minus the profile.
+    static func csv(_ samples: [UsageSample]) -> String {
+        let f = ISO8601DateFormatter()
+        func n(_ v: Double?) -> String { v.map { String(format: "%g", $0) } ?? "" }
+        return "time,five_hour,weekly\n" + samples.map { "\(f.string(from: $0.t)),\(n($0.h)),\(n($0.w))\n" }.joined()
+    }
+}
+
+// Where a limit is heading: its rate over the recent past (the last hour for
+// the 5-hour limit, the last day for the weekly one), but only within the
+// current window, so the drop at the last reset never counts. Needs a
+// reading at least `minSpan` old to say anything. Usage that went down
+// (a reset the readings straddle) counts as no usage.
+enum Forecast {
+    static func pace(value: Double?, reset: Date?, window: TimeInterval, samples: [(Date, Double)],
+                     lookback: TimeInterval, minSpan: TimeInterval, now: Date = Date()) -> Pace? {
+        guard let value, let reset, value < 100 else { return nil }
+        let left = reset.timeIntervalSince(now)
+        guard left > 0, left <= window else { return nil }
+        let from = max(reset.addingTimeInterval(-window), now.addingTimeInterval(-lookback))
+        guard let first = samples.first(where: { $0.0 >= from && $0.0 < now }) else { return nil }
+        let span = now.timeIntervalSince(first.0)
+        guard span >= minSpan else { return nil }
+        let rate = max(0, (value - first.1) / span)          // percent per second
+        let runsOut = rate > 0 ? (100 - value) / rate : .infinity
+        return Pace(atReset: min(100, value + rate * left),
+                    runsOutAt: runsOut < left ? now.addingTimeInterval(runsOut) : nil)
     }
 }

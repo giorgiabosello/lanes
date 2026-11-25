@@ -61,7 +61,11 @@ enum Snapshots {
             "Default": Usage(fiveHour: 23, sevenDay: 41, fiveHourReset: now + 3 * 3600 + 12 * 60,
                              sevenDayReset: now + 3 * 86400 + 5 * 3600),
             "Work": Usage(fiveHour: 86, sevenDay: 63, fiveHourReset: now + 38 * 60,
-                          sevenDayReset: now + 2 * 86400 + 9 * 3600),
+                          sevenDayReset: now + 2 * 86400 + 9 * 3600,
+                          models: [ModelLimit(key: "seven_day_opus", label: "Opus", used: 48,
+                                              reset: now + 2 * 86400 + 9 * 3600)],
+                          fiveHourPace: Pace(atReset: 100, runsOutAt: now + 24 * 60),
+                          sevenDayPace: Pace(atReset: 81, runsOutAt: nil)),
             "Studio": Usage(fiveHour: 7, sevenDay: 12, fiveHourReset: now + 4 * 3600 + 41 * 60,
                             sevenDayReset: now + 6 * 86400 + 2 * 3600),
             "Personal": Usage(fiveHour: nil, sevenDay: nil, error: "not signed in"),
@@ -82,7 +86,7 @@ enum Snapshots {
         let now = Date(), step: TimeInterval = 600
         let cal = Calendar.current
         var out: [UsageSample] = []
-        var t = now - UsageHistory.keep + step
+        var t = now - LimitWindow.week + step
         while t <= now {
             let hour = Double(cal.component(.hour, from: t)) + Double(cal.component(.minute, from: t)) / 60
             let day = Double(cal.ordinality(of: .day, in: .era, for: t) ?? 0)
@@ -93,7 +97,7 @@ enum Snapshots {
                 let ramp = min(1, (hour - start) / 3.2)
                 h = peak * vary * (i == 0 ? 1 : 0.7) * pow(ramp, 0.8)
             }
-            let progress = 1 - (now.timeIntervalSince(t) / UsageHistory.keep)
+            let progress = 1 - (now.timeIntervalSince(t) / LimitWindow.week)
             out.append(UsageSample(t: t, h: min(100, h), w: weekNow * progress))
             t += step
         }

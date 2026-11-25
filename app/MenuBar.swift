@@ -86,6 +86,11 @@ struct MenuPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if store.usageLooksBroken {
+                UsageBrokenBanner(store: store)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 6)
+            }
             if let best = store.roomiestProfile() {
                 RoomiestCard(profile: best,
                              running: store.running.contains(best.id),

@@ -26,6 +26,7 @@ lanes add work --color blue     # a new profile, with its Spotlight launcher
 lanes launch work               # launch it, or bring it forward if it's running
 lanes launch --best             # the profile with the most 5-hour room
 lanes usage                     # 5-hour and weekly usage, with reset times
+lanes history work --days 7     # a week of usage readings, as CSV
 lanes list                      # every profile, and whether its launcher is healthy
 lanes color work teal           # recolor its Dock tile and launcher
 lanes remove work               # remove it; asks before touching its data
@@ -42,7 +43,8 @@ its launcher is **Claude Client Acme**. The colors are `orange`, `red`,
 | `lanes add <name> [--color <c>]` | Creates a profile and its Spotlight launcher, and installs the watchdog. Running it again on an existing profile rebuilds the launcher and keeps the color unless you pass a new one. |
 | `lanes launch <name>` | Launches the profile from its own clone of Claude.app, or focuses it if it's already running. |
 | `lanes launch --best` | Launches the profile with the most 5-hour headroom. A profile whose weekly limit is used up is skipped, unless they all are. |
-| `lanes usage [--json]` | The latest usage per profile, as last loaded by the menu bar app. `●` marks running profiles. |
+| `lanes usage [--json]` | The latest usage per profile, as last loaded by the menu bar app. `●` marks running profiles. Per-model weekly limits (such as Opus) are listed under their profile, followed by a warning for any limit on pace to run out before it resets. |
+| `lanes history [<name>] [--days N] [--json]` | The usage readings behind the drawer's chart, one every ten minutes, for up to 30 days: every profile, or just one. CSV by default (`profile,time,five_hour,weekly`, times in UTC), JSON with `--json`. |
 | `lanes list` | Profiles, their data folders, and whether each launcher is in place. |
 | `lanes color <name> <color>` | Changes a profile's color. A running profile picks it up on its next launch. |
 | `lanes remove <name> [--keep-data \| --delete-data]` | Removes the launcher, and optionally the data folder. Without a flag, it asks. |
@@ -73,6 +75,15 @@ What `lanes usage --json` prints:
       "color" : "blue",
       "fiveHour" : 86,
       "fiveHourReset" : "2026-11-24T18:40:00Z",
+      "fiveHourRunsOut" : "2026-11-24T18:25:00Z",
+      "limits" : [
+        {
+          "key" : "seven_day_opus",
+          "label" : "Opus",
+          "reset" : "2026-11-27T05:00:00Z",
+          "used" : 48
+        }
+      ],
       "name" : "Work",
       "running" : true,
       "sevenDay" : 63,
@@ -93,15 +104,25 @@ Percentages are the share of each limit used. A field the app doesn't know
 is left out. `error` is set when a profile has no numbers: `not signed in`,
 `session expired`, or a short network error.
 
+- `fiveHourRunsOut` and `sevenDayRunsOut`: when that limit will be used up
+  at its recent pace, present only when that's before it resets.
+- `limits`: weekly limits for a single model family, when the account has
+  any.
+- `staleSince`: the last check failed, and the numbers are the ones read at
+  this time. Lanes keeps them for up to an hour.
+
 ### `usage.tsv`
 
 One line per profile, tab-separated, after a `# updated <epoch>` header:
 
 ```
 name  color  running(1/0)  5h%  5h-reset-epoch  week%  week-reset-epoch  error
+5h-runs-out-epoch  week-runs-out-epoch  models  stale-since-epoch
 ```
 
-Empty fields mean unknown.
+(one line per profile; wrapped here). Empty fields mean unknown. `models` is
+a comma-separated list of `Label=percent@reset-epoch`, such as
+`Opus=48@1764219600`. New columns are only ever added at the end.
 
 ### Example: a status line
 
