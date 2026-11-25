@@ -139,10 +139,25 @@ You need macOS 13 or later (Apple Silicon or Intel) and
    <details>
    <summary>Show me</summary>
    <br>
-   <img src="docs/images/gatekeeper-blocked.png" width="240" alt="macOS dialog: “Lanes” Not Opened">
-   <img src="docs/images/open-anyway.png" width="460" alt="Privacy & Security, with the Open Anyway button">
-   <img src="docs/images/open-anyway-confirm.png" width="260" alt="macOS dialog: Open “Lanes”?">
-   <br><br>
+   <table>
+     <tr>
+       <td align="center" valign="middle">
+         <img src="docs/images/gatekeeper-blocked.png" width="200" alt="macOS dialog: “Lanes” Not Opened">
+       </td>
+       <td align="center" valign="middle">
+         <img src="docs/images/open-anyway.png" width="340" alt="Privacy & Security, with the Open Anyway button">
+       </td>
+       <td align="center" valign="middle">
+         <img src="docs/images/open-anyway-confirm.png" width="200" alt="macOS dialog: Open “Lanes”?">
+       </td>
+     </tr>
+     <tr>
+       <td align="center"><sub><b>1.</b> First launch: click Done</sub></td>
+       <td align="center"><sub><b>2.</b> Privacy &amp; Security: Open Anyway</sub></td>
+       <td align="center"><sub><b>3.</b> Confirm</sub></td>
+     </tr>
+   </table>
+
    Or, from the Terminal:
 
    ```sh
