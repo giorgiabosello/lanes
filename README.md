@@ -129,13 +129,26 @@ whichever Claude happens to be running.
 You need macOS 13 or later (Apple Silicon or Intel) and
 [Claude Desktop](https://claude.ai/download) in Applications.
 
-1. **Download** `Lanes.zip` from the [latest release](../../releases/latest),
+**The quick way:** paste this in Terminal.
+
+```sh
+curl -fsSL https://lanes.pego.tech/install | sh
+```
+
+It downloads the latest release, checks its signature, puts Lanes in
+Applications and opens it. Files downloaded with `curl` aren't quarantined,
+so there's no security prompt. [Read the script](site/install) first if you
+like. Then **create a profile** with **New Profile**, open it and sign in.
+
+**Or download it:**
+
+1. **Download** `Lanes.dmg` from the [latest release](../../releases/latest),
    open it, and drag **Lanes** into Applications.
-2. **Open it once, the long way.** Lanes isn't from the App Store, so the
+2. **Open it once, the long way.** Lanes isn't notarized by Apple, so the
    first launch stops with *"Lanes" Not Opened*. Click **Done**, then go to
    **System Settings → Privacy & Security**, scroll to **Security**, and
    click **Open Anyway**. Confirm once more with your password or Touch ID.
-   This happens once per version.
+   This happens only once: updates install without it.
 
    <details>
    <summary>Show me</summary>
@@ -167,7 +180,9 @@ You need macOS 13 or later (Apple Silicon or Intel) and
    </details>
 3. **Create a profile** with **New Profile**, then open it and sign in.
 
-**Upgrading?** Replace the app in Applications. On its first launch, the new
+**Updates** install themselves: Lanes checks GitHub every few hours, installs
+a new version and reopens (turn that off in **Settings → Updates** to be
+asked first). From the Terminal, `lanes update`. On its first launch, the new
 version refreshes your launchers and the watchdog. Profiles, logins and
 colors stay as they are.
 

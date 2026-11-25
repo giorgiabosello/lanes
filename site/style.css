@@ -113,6 +113,28 @@ h2 { font-size: var(--fs-h2); line-height: 1.05; letter-spacing: var(--track-h2)
 .btn-lg { padding: 18px 34px; font-size: 18px; }
 .btn svg { flex: none; }
 
+/* The install command: the primary call to action. */
+.install-cmd {
+  display: flex; align-items: center; gap: 6px;
+  width: fit-content; max-width: 100%; margin: 0 auto 16px; padding: 6px 6px 6px 20px;
+  border-radius: 999px; background: rgba(36, 26, 40, .85);
+  box-shadow: inset 0 0 0 1.5px rgba(244, 115, 105, .55), 0 10px 30px -12px rgba(244, 115, 105, .5);
+  backdrop-filter: blur(6px);
+}
+.install-cmd code {
+  min-width: 0; background: none; padding: 0; font-size: 15px; color: var(--ink);
+  white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+.install-cmd .prompt { color: var(--coral); margin-right: .5em; user-select: none; }
+.copy {
+  flex: none; border: 0; cursor: pointer; padding: 10px 18px; border-radius: 999px;
+  font: 650 var(--fs-ui) var(--font); background: var(--coral); color: #2A0F0C;
+  transition: background .15s;
+}
+.copy:hover { background: #FF8278; }
+.hero .install-cmd { animation: up .9s var(--ease) .2s both; }
+.fine a { color: var(--ink); }
+
 /* ---------- hero ---------- */
 .hero {
   position: relative; overflow: hidden;

@@ -56,14 +56,18 @@
       <p class="eyebrow"><span class="pip"></span>For Claude Desktop on macOS</p>
       <h1>Every Claude account <br class="br-wide">in its own <em>lane<span class="dot">.</span></em></h1>
       <p class="lede">Work, personal, one per client. Run them all side by side, each with its own login and chats, and always know which one has room left.</p>
+      <div class="install-cmd">
+        <code><span class="prompt" aria-hidden="true">$</span> curl -fsSL https://lanes.pego.tech/install | sh</code>
+        <button class="copy" type="button" data-copy="curl -fsSL https://lanes.pego.tech/install | sh" aria-label="Copy the install command">Copy</button>
+      </div>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">
+        <a class="btn btn-ghost" href="https://github.com/pego/lanes/releases/latest/download/Lanes.dmg">
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Download for macOS
+          Download .dmg
         </a>
         <a class="btn btn-ghost" href="https://github.com/pego/lanes">View on GitHub</a>
       </div>
-      <p class="fine">Free and open source · macOS&nbsp;13+ · Apple&nbsp;Silicon and&nbsp;Intel</p>
+      <p class="fine">Paste it in Terminal: no security prompts, and Lanes keeps itself up to date.<br>Free and open source · macOS&nbsp;13+ · Apple&nbsp;Silicon and&nbsp;Intel</p>
     </div>
     <a class="scroll-cue" href="#story" aria-label="Scroll to the tour"><span></span></a>
   </section>
@@ -251,13 +255,15 @@
     <div class="wrap finale-copy">
       <h2>Get on the track.</h2>
       <ol class="steps">
-        <li><b>Download</b> <code>Lanes.zip</code> and drag <b>Lanes</b> into Applications.</li>
-        <li><b>Open it once, the long way:</b> click Done, then <b>Privacy &amp; Security → Open Anyway</b>.</li>
+        <li><b>Paste the command</b> in Terminal. Lanes lands in Applications and opens in your menu bar.</li>
         <li><b>New Profile</b>, open it, sign in. That’s a lane.</li>
+        <li><b>That’s it.</b> Lanes installs its own updates; your profiles stay as they are.</li>
       </ol>
-      <div class="cta">
-        <a class="btn btn-primary btn-lg" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download Lanes for macOS</a>
+      <div class="install-cmd">
+        <code><span class="prompt" aria-hidden="true">$</span> curl -fsSL https://lanes.pego.tech/install | sh</code>
+        <button class="copy" type="button" data-copy="curl -fsSL https://lanes.pego.tech/install | sh" aria-label="Copy the install command">Copy</button>
       </div>
+      <p class="fine">Prefer a download? Get the <a href="https://github.com/pego/lanes/releases/latest/download/Lanes.dmg">.dmg</a>. It isn’t notarized by Apple, so the first launch needs<br><b>System Settings → Privacy &amp; Security → Open Anyway</b>. The command above skips that, and you can <a href="https://github.com/pego/lanes/blob/main/site/install">read it first</a>.</p>
       <p class="fine">Lanes runs the same Claude app, unmodified, signed in to accounts you own.<br>Independent project, not affiliated with or endorsed by Anthropic.</p>
     </div>
   </section>

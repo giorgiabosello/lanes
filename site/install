@@ -1,0 +1,85 @@
+#!/bin/sh
+# Lanes installer:
+#
+#   curl -fsSL https://lanes.pego.tech/install | sh
+#
+# Downloads the latest release of Lanes.app from GitHub, checks its bundle id
+# and signature, and puts it in /Applications (or ~/Applications when
+# /Applications isn't writable), replacing an older copy. Files downloaded
+# with curl aren't quarantined, so Lanes opens without macOS's "Open Anyway"
+# detour. It is the same app as the DMG on the website; after this, Lanes
+# keeps itself up to date.
+#
+# Source: https://github.com/pego/lanes/blob/main/site/install
+set -eu
+
+RELEASE_ZIP_URL="https://github.com/pego/lanes/releases/latest/download/Lanes.zip"
+BUNDLE_ID="io.github.pego.lanes"
+
+say()  { printf '%s\n' "$*"; }
+fail() { printf '✗ %s\n' "$*" >&2; exit 1; }
+plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null; }
+
+# Everything runs from main, called on the last line, so a download cut short
+# never runs half a script.
+main() {
+  [ "$(uname -s)" = Darwin ] || fail "Lanes runs on macOS only."
+  major=$(sw_vers -productVersion | cut -d. -f1)
+  [ "$major" -ge 13 ] || fail "Lanes needs macOS 13 or later."
+
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  if [ -n "${LANES_RELEASE_ZIP:-}" ]; then   # tests: a local build
+    cp "$LANES_RELEASE_ZIP" "$tmp/Lanes.zip"
+  else
+    say "Downloading Lanes…"
+    curl -fSL --progress-bar -o "$tmp/Lanes.zip" "$RELEASE_ZIP_URL" || fail "Download failed."
+  fi
+  ditto -x -k "$tmp/Lanes.zip" "$tmp/new" || fail "The download is corrupt; try again."
+  new="$tmp/new/Lanes.app"
+  [ "$(plist "$new" CFBundleIdentifier)" = "$BUNDLE_ID" ] || fail "The download isn't a Lanes app; not installing it."
+  codesign --verify --deep --strict "$new" 2>/dev/null || fail "The app's signature doesn't verify; not installing it."
+  version=$(plist "$new" CFBundleShortVersionString)
+
+  # Where an existing copy lives, else /Applications when writable.
+  if [ -n "${LANES_INSTALL_DIR:-}" ]; then dir=$LANES_INSTALL_DIR
+  elif [ -d /Applications/Lanes.app ]; then dir=/Applications
+  elif [ -d "$HOME/Applications/Lanes.app" ]; then dir=$HOME/Applications
+  elif [ -w /Applications ]; then dir=/Applications
+  else dir=$HOME/Applications
+  fi
+  mkdir -p "$dir"
+  app="$dir/Lanes.app"
+
+  # Quit a running copy so it can be replaced.
+  if pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null; then
+    i=0
+    while pgrep -f "$app/Contents/MacOS/Lanes" >/dev/null 2>&1 && [ $i -lt 50 ]; do
+      sleep 0.2; i=$((i + 1))
+    done
+  fi
+  if [ -e "$app" ]; then
+    mv "$app" "$tmp/old" || fail "Couldn't replace $app. Delete it, then run this again."
+  fi
+  if ! mv "$new" "$app"; then
+    [ -e "$tmp/old" ] && mv "$tmp/old" "$app"
+    fail "Couldn't install into $dir."
+  fi
+  say "✓ Lanes $version installed in $dir"
+
+  # The lanes CLI, best effort: link it into the first writable bin dir on PATH.
+  for bin in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin"; do
+    case ":$PATH:" in *":$bin:"*) ;; *) continue ;; esac
+    [ -d "$bin" ] && [ -w "$bin" ] || continue
+    ln -sf "$app/Contents/Resources/lanes" "$bin/lanes" && { say "✓ lanes command linked into $bin"; break; }
+  done
+
+  [ -n "${LANES_NO_OPEN:-}" ] || open "$app"
+  say ""
+  say "Lanes is in your menu bar. Click it, then New Profile to add a lane."
+  [ -d /Applications/Claude.app ] || [ -d "$HOME/Applications/Claude.app" ] ||
+    say "You'll also need Claude Desktop: https://claude.ai/download"
+}
+
+main "$@"

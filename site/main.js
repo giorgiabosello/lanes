@@ -248,3 +248,16 @@ if ("IntersectionObserver" in window) {
   $(".finale").classList.add("in");
 }
 
+
+// ---------- copy the install command ----------
+document.querySelectorAll(".copy").forEach((b) => {
+  b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      b.textContent = "Copied";
+    } catch {
+      b.textContent = "Select & copy";
+    }
+    setTimeout(() => { b.textContent = "Copy"; }, 1800);
+  });
+});

@@ -48,12 +48,20 @@ targets macOS 13 and the widget macOS 14.
 ## Release and tests
 
 ```sh
-scripts/build.sh     # build/Lanes.app and build/Lanes.zip, universal
-scripts/test.sh      # builds, checks the bundle, then runs a quarantined
-                     # copy's first-launch setup in a throwaway HOME
+scripts/build.sh     # build/Lanes.app, build/Lanes.zip and build/Lanes.dmg
+scripts/test.sh      # builds, checks the bundle, runs a quarantined copy's
+                     # first-launch setup, the curl installer and
+                     # `lanes update`, all in a throwaway HOME
 ```
 
 The tests never touch your real `~/Applications`, profiles or watchdog.
+
+A release is a GitHub release tagged `v<version>` with **both** `Lanes.zip`
+and `Lanes.dmg` attached. The curl installer (`site/install`, served at
+lanes.pego.tech/install) and the updater (`lanes update`, which the app runs)
+download `Lanes.zip`; the website's download button links `Lanes.dmg`. The
+updater finds the latest version from where `releases/latest` redirects, so
+publishing the release is all it takes.
 
 The version lives in one place, `LANES_VERSION` at the top of `bin/lanes`.
 The app's `Info.plist` is written from it.

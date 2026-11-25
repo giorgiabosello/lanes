@@ -48,6 +48,7 @@ its launcher is **Claude Client Acme**. The colors are `orange`, `red`,
 | `lanes remove <name> [--keep-data \| --delete-data]` | Removes the launcher, and optionally the data folder. Without a flag, it asks. |
 | `lanes watchdog [install \| uninstall \| status]` | Manages the LaunchAgent that puts profiles back on their own data after an update relaunches them. `status` also lists any strays. |
 | `lanes watch [--once]` | What the watchdog runs every three seconds. |
+| `lanes update [--check]` | Installs the latest release of Lanes.app in place of the installed one, and reopens it if it was running. `--check` only reports whether there is one. The app does the same on its own unless **Settings → Updates** says otherwise. |
 | `lanes setup [--if-needed]` | Points the launchers, the watchdog and the helper at this copy of `lanes`. The app runs it the first time a new version opens. |
 | `lanes gui` | Builds the app from a repo checkout and installs it into `~/Applications`. Needs the Xcode Command Line Tools. |
 | `lanes chooser [--force]` | Builds a dialog-based AppleScript picker instead, with no build tools needed. It won't replace the full app without `--force`. |

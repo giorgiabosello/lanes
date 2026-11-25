@@ -76,4 +76,29 @@ touch -t 200001010000 "$launcher"
 setup --if-needed >/dev/null 2>&1
 check "setup --if-needed skips when current" test "$(stat -f %Sm -t %Y "$launcher")" = 2000
 
+# ---- the DMG, the curl installer and `lanes update` -------------------------
+
+check "dmg verifies" hdiutil verify -quiet build/Lanes.dmg
+check "installer parses" sh -n site/install
+# A bare PATH so the installer's CLI symlink never lands in a real bin dir.
+fresh="$sandbox/Fresh"
+check "curl installer installs" env HOME="$sandbox" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  LANES_RELEASE_ZIP=build/Lanes.zip LANES_INSTALL_DIR="$fresh" LANES_NO_OPEN=1 sh site/install
+check "installed app is this build" cmp bin/lanes "$fresh/Lanes.app/Contents/Resources/lanes"
+check "installed app is not quarantined" not_quarantined "$fresh/Lanes.app"
+check "installed app's signature verifies" codesign --verify --deep --strict "$fresh/Lanes.app"
+
+update() { HOME="$sandbox" LANES_WATCH_LABEL="$label" LANES_LATEST="$version" LANES_RELEASE_ZIP=build/Lanes.zip zsh "$installed/Contents/Resources/lanes" update "$@" }
+update_says() { update --check | grep -qF "$1" }
+check "update --check: up to date" update_says "up to date"
+check "update: nothing to do when current" update
+# Pretend the installed copy is old, then update it to this build.
+sed -i '' 's/^LANES_VERSION=.*/LANES_VERSION="0.0.1"/' "$installed/Contents/Resources/lanes"
+check "update --check: sees the new version" update_says "$version is available"
+check "update installs" update
+check "updated app is this build" cmp bin/lanes "$installed/Contents/Resources/lanes"
+check "updated app's signature verifies" codesign --verify --deep --strict "$installed"
+check "updated app is not quarantined" not_quarantined "$installed"
+check "update re-ran setup" grep -qxF "$version $installed/Contents/Resources/lanes" "$sandbox/Library/Caches/Lanes/setup"
+
 (( fails == 0 )) && print -- "all passed" || { print -- "$fails failed"; exit 1 }

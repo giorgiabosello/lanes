@@ -47,10 +47,31 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("General")
+            }
+
+            Section {
+                Toggle(isOn: $store.autoUpdate) {
+                    described("Install updates automatically",
+                              "Lanes checks GitHub for a new version every few hours, installs it and reopens. Off, it only tells you in the menu bar panel.")
+                }
+                HStack {
+                    updateStatus
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let v = store.availableUpdate, !store.isUpdating {
+                        Button("Install \(v)") { store.installUpdate() }
+                    } else {
+                        Button("Check Now") { store.checkForUpdate() }
+                            .disabled(store.isCheckingForUpdate || store.isUpdating)
+                    }
+                }
+            } header: {
+                Text("Updates")
             } footer: {
                 HStack(spacing: 6) {
                     Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 16, height: 16)
-                    Text("Lanes \(version) · No telemetry. Usage is read from claude.ai with each profile's own session.")
+                    Text("Lanes \(version) · No telemetry. Usage is read from claude.ai with each profile's own session; update checks only ask GitHub for the latest version.")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -63,6 +84,22 @@ struct SettingsView: View {
         .tint(Brand.coral)
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private var updateStatus: some View {
+        if store.isUpdating {
+            Text("Installing the update…")
+        } else if let error = store.updateError {
+            Text(error).foregroundStyle(.red)
+        } else if store.isCheckingForUpdate {
+            Text("Checking…")
+        } else if let v = store.availableUpdate {
+            Text("Lanes \(v) is available.")
+        } else if let date = store.lastUpdateCheck {
+            Text("Up to date · checked \(date.formatted(date: .omitted, time: .shortened))")
+        } else {
+            Text("Lanes \(version)")
+        }
     }
 
     private func described(_ title: String, _ detail: String) -> some View {

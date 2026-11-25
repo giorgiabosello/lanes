@@ -112,6 +112,9 @@ struct MenuPanel: View {
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 6)
+            if let v = store.availableUpdate, !store.autoUpdate || store.isUpdating || store.updateError != nil {
+                updateBar(v)
+            }
             footer
         }
         .frame(width: 330)
@@ -174,6 +177,27 @@ struct MenuPanel: View {
         .font(.callout)
         .padding(6)
         .background(Color.primary.opacity(0.045))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private func updateBar(_ version: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Brand.coral)
+            Text(store.isUpdating ? "Updating Lanes…" : "Lanes \(version) is available")
+                .font(.callout)
+            Spacer()
+            if store.isUpdating {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Update") { store.installUpdate() }
+                    .buttonStyle(HoverButtonStyle())
+                    .font(.callout.weight(.semibold))
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(Brand.coral.opacity(0.08))
         .overlay(alignment: .top) { Divider() }
     }
 

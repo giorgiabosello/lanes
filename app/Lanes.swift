@@ -387,6 +387,22 @@ final class ProfileStore: ObservableObject {
         }
     }
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoUpdate, forKey: "autoUpdate")
+            if autoUpdate { checkForUpdate() }
+        }
+    }
+
+    // Lanes' own updates (not Claude's): the newer release on GitHub, if any.
+    @Published var availableUpdate: String?
+    @Published var isUpdating = false
+    @Published var isCheckingForUpdate = false
+    @Published var lastUpdateCheck: Date?
+    @Published var updateError: String?
+    // A version whose install failed isn't retried automatically this session.
+    private var failedUpdate: String?
+    private var updateTimer: Timer?
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
@@ -419,6 +435,82 @@ final class ProfileStore: ObservableObject {
         GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
         refreshUsage()
         startLinkRouting()
+        // Not only from the window: an auto-update relaunches straight into
+        // the menu bar, and the new version must still repoint launchers.
+        setUp()
+        // First check shortly after launch, then every 6 hours.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.checkForUpdate() }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.checkForUpdate()
+        }
+    }
+
+    var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    // Asks GitHub for the latest release: releases/latest redirects to
+    // …/releases/tag/v<version>. Nothing about this Mac is sent.
+    func checkForUpdate() {
+        guard live, !isCheckingForUpdate, !isUpdating else { return }
+        isCheckingForUpdate = true
+        var req = URLRequest(url: URL(string: "https://github.com/pego/lanes/releases/latest")!,
+                             cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        req.httpMethod = "HEAD"
+        URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in
+            let tag = (response as? HTTPURLResponse)?.url?.lastPathComponent ?? ""
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCheckingForUpdate = false
+                guard tag.hasPrefix("v"), tag.dropFirst().first?.isNumber == true else { return }
+                self.lastUpdateCheck = Date()
+                let latest = String(tag.dropFirst())
+                self.availableUpdate = versionLessThan(self.appVersion, latest) ? latest : nil
+                if let v = self.availableUpdate, self.autoUpdate, v != self.failedUpdate {
+                    self.installUpdate()
+                }
+            }
+        }.resume()
+    }
+
+    // Hands the install to the bundled `lanes update`, which quits this app,
+    // swaps the bundle and reopens it. Detached from us, output to a log
+    // file: a pipe back to this process would break when it is quit.
+    func installUpdate() {
+        guard live, !isUpdating, let lanes = scriptPath else { return }
+        let target = availableUpdate
+        isUpdating = true
+        updateError = nil
+        let logDir = NSHomeDirectory() + "/Library/Caches/Lanes"
+        let logPath = logDir + "/update.log"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = [lanes, "update", "--relaunch"]
+        p.standardInput = FileHandle.nullDevice
+        let log = FileHandle(forWritingAtPath: logPath)
+        p.standardOutput = log ?? FileHandle.nullDevice
+        p.standardError = log ?? FileHandle.nullDevice
+        // Only reached when the update didn't happen: on success, this app is
+        // quit and the new version opens.
+        p.terminationHandler = { proc in
+            DispatchQueue.main.async {
+                self.isUpdating = false
+                if proc.terminationStatus != 0 {
+                    self.failedUpdate = target
+                    let detail = (try? String(contentsOfFile: logPath, encoding: .utf8))?
+                        .split(separator: "\n").last { $0.hasPrefix("✗") }
+                        .map { String($0.dropFirst(2)) }
+                    self.updateError = detail ?? "The update failed. Details: ~/Library/Caches/Lanes/update.log"
+                }
+            }
+        }
+        do { try p.run() } catch {
+            isUpdating = false
+            failedUpdate = target
+            updateError = error.localizedDescription
+        }
     }
 
     private func scheduleUsageTimer() {
@@ -672,8 +764,10 @@ final class ProfileStore: ObservableObject {
 
     // A new version's first launch points launchers, watchdog and helper at
     // this app's lanes. Off the main thread: rebuilding launchers takes seconds.
+    private var didSetUp = false
     func setUp() {
-        guard live, let lanes = scriptPath else { return }
+        guard live, !didSetUp, let lanes = scriptPath else { return }
+        didSetUp = true
         DispatchQueue.global(qos: .userInitiated).async {
             var failure: String?
             do { try runTool("/bin/zsh", [lanes, "setup", "--if-needed"], env: ["LANES_FROM_CHOOSER": "1"]) }

@@ -26,7 +26,7 @@ set -euo pipefail
 # (FUNCTION_ARGZERO), which would break the self-copy into the chooser bundle.
 SCRIPT_PATH="${0:A}"
 
-LANES_VERSION="0.7.0"
+LANES_VERSION="0.8.0"
 
 APP_SUPPORT="$HOME/Library/Application Support"
 LAUNCHER_DIR="$HOME/Applications"
@@ -35,6 +35,9 @@ LAUNCHER_DIR="$HOME/Applications"
 BUNDLE_PREFIX="io.github.pego.lanes"
 APP_NAME="Lanes"
 CACHE_DIR="$HOME/Library/Caches/Lanes"
+# GitHub releases: the source of `lanes update`, the app's updater and the
+# curl installer (site/install).
+RELEASES_URL="https://github.com/pego/lanes/releases"
 # Everything Lanes keeps: profiles, app clones, the usage snapshot and history.
 DATA_DIR="$APP_SUPPORT/Lanes"
 # Per-profile clones of Claude.app (APFS copy-on-write) live here, outside
@@ -1170,6 +1173,98 @@ cmd_setup() {
   print -- "$want" > "$stamp"
 }
 
+# The latest released version, read from where releases/latest redirects
+# (…/releases/tag/v1.2.3): no API, no token, no rate limit worth noting.
+# LANES_LATEST overrides it (tests).
+latest_version() {
+  [[ -n "${LANES_LATEST:-}" ]] && { print -- "$LANES_LATEST"; return 0 }
+  local loc
+  loc=$(curl -fsSI --max-time 20 "$RELEASES_URL/latest" 2>/dev/null |
+        tr -d '\r' | awk 'tolower($1) == "location:" { print $2 }' | tail -1)
+  [[ "$loc" == */tag/v<->.<->* ]] || return 1
+  print -- "${loc##*/tag/v}"
+}
+
+# `lanes update`: replaces the installed Lanes.app with the latest release.
+# curl (unlike a browser) doesn't quarantine what it downloads, so the new
+# version opens without a Gatekeeper prompt. The release is unpacked and its
+# bundle id and signature checked before the old app is moved aside; a
+# failed swap puts the old one back.
+#   --check     only report whether a newer version exists
+#   --relaunch  reopen the app afterwards even if it wasn't running (the
+#               app's own updater: it is quit to be replaced)
+cmd_update() {
+  local check=0 relaunch=0 a
+  for a in "$@"; do
+    case "$a" in
+      --check) check=1 ;;
+      --relaunch) relaunch=1 ;;
+      *) err "Usage: lanes update [--check]" ;;
+    esac
+  done
+  local latest
+  latest=$(latest_version) || err "Could not reach GitHub to check for updates."
+  if ! version_lt "$LANES_VERSION" "$latest"; then
+    ok "Lanes $LANES_VERSION is up to date."
+    return 0
+  fi
+  if (( check )); then
+    info "Lanes $latest is available (you have $LANES_VERSION). Install it with: lanes update"
+    return 0
+  fi
+
+  local app
+  app=$(manager_app) && is_swiftui_manager "$app" ||
+    err "Lanes.app isn't installed. Install it with: curl -fsSL https://lanes.pego.tech/install | sh"
+  [[ "$app" != */AppTranslocation/* ]] ||
+    err "Move Lanes to your Applications folder, then update."
+  [[ -w "${app:h}" ]] || err "Can't write to ${app:h}; update Lanes from an admin account."
+
+  local tmp new
+  tmp=$(mktemp -d)
+  # The script itself lives inside $app: moving the bundle aside keeps the
+  # file (and this running shell's handle on it) intact until the very end.
+  trap "rm -rf ${(q)tmp}" EXIT
+  info "Downloading Lanes $latest…"
+  if [[ -n "${LANES_RELEASE_ZIP:-}" ]]; then
+    cp "$LANES_RELEASE_ZIP" "$tmp/Lanes.zip"
+  else
+    curl -fsSL --max-time 600 -o "$tmp/Lanes.zip" "$RELEASES_URL/download/v$latest/Lanes.zip" ||
+      err "Downloading Lanes $latest failed."
+  fi
+  ditto -x -k "$tmp/Lanes.zip" "$tmp/new" || err "The download is corrupt; try again."
+  new="$tmp/new/$APP_NAME.app"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$new/Contents/Info.plist" 2>/dev/null)" == "$BUNDLE_PREFIX" ]] ||
+    err "The download isn't a Lanes app; not installing it."
+  /usr/bin/codesign --verify --deep --strict "$new" 2>/dev/null ||
+    err "The downloaded app's signature doesn't verify; not installing it."
+  xattr -dr com.apple.quarantine "$new" 2>/dev/null || true
+
+  # Quit the running app (SIGTERM: a normal quit) and wait for it to go.
+  local running=0 i
+  if pkill -f "$app/Contents/MacOS/Lanes" 2>/dev/null; then
+    running=1
+    for i in {1..50}; do
+      pgrep -f "$app/Contents/MacOS/Lanes" >/dev/null 2>&1 || break
+      sleep 0.2
+    done
+    pkill -9 -f "$app/Contents/MacOS/Lanes" 2>/dev/null || true
+  fi
+
+  mv "$app" "$tmp/old" || err "Couldn't move the old Lanes aside."
+  if ! mv "$new" "$app"; then
+    mv "$tmp/old" "$app"
+    err "Couldn't install the new Lanes; the old one is back in place."
+  fi
+  ok "Lanes updated to $latest."
+
+  # The new version's lanes points launchers and the watchdog at itself.
+  zsh "$app/Contents/Resources/lanes" setup --if-needed >/dev/null 2>&1 ||
+    warn "Refreshing launchers failed; opening Lanes retries it."
+  (( running || relaunch )) && open "$app"
+  return 0
+}
+
 cmd_list() {
   local d found=0
   for d in "$PROFILES_DIR"/*(N/); do
@@ -1246,6 +1341,7 @@ MAINTENANCE
                                    The LaunchAgent that puts a profile back on its
                                    own data after an update relaunches it
   lanes watch [--once]             What the watchdog runs
+  lanes update [--check]           Install the latest release of Lanes.app
   lanes setup [--if-needed]        Point launchers, watchdog and helper at this copy
   lanes gui                        Build and install the app (repo checkout + Xcode tools)
   lanes chooser [--force]          Build the AppleScript picker instead
@@ -1270,6 +1366,7 @@ case "${1:-help}" in
   gui)     cmd_gui ;;
   chooser) shift; cmd_chooser "$@" ;;
   setup)   shift; cmd_setup "$@" ;;
+  update)  shift; cmd_update "$@" ;;
   build)   shift; build_manager_app "${1:?Usage: lanes build <out.app>}" ;;
   version|--version) print -- "$LANES_VERSION" ;;
   help|-h|--help) cmd_help ;;
