@@ -363,16 +363,31 @@ has_custom_icon() {
   [[ -f "$1/Icon"$'\r' ]]
 }
 
+# The data dir an instance runs on, given the args after its --user-data-dir=:
+# the longest of the profile folders (plus any extra candidates passed) that
+# the args are or start with, followed by a space. ps joins argv with spaces,
+# so a running "Client Acme" also starts with ".../Client " and only the
+# longest match tells the two apart. "Work" never matches "Workshop".
+owning_data_dir() {
+  local args="$1" d best=""
+  shift
+  for d in "$PROFILES_DIR"/*(N/) "$@"; do
+    if [[ "$args" == "$d" || "$args" == "$d "* ]] && (( ${#d} > ${#best} )); then
+      best="$d"
+    fi
+  done
+  print -r -- "$best"
+}
+
 # PID of the main Claude process using this data dir (any bundle — original
 # or clone), empty when not running. The trailing `|| true` matters: under
 # `set -euo pipefail` a no-match grep (exit 1) would otherwise kill the
 # whole script at the call site's assignment.
 instance_pid() {
-  # The whole path, not a prefix: "Work" must not match a running "Workshop".
-  local line flag="--user-data-dir=$1"
+  local line
   ps -axo pid=,command= 2>/dev/null | while IFS= read -r line; do
-    [[ "$line" == *"/Contents/MacOS/Claude "* && "$line" != *Helper* ]] || continue
-    [[ "$line" == *"$flag" || "$line" == *"$flag "* ]] || continue
+    [[ "$line" == *"/Contents/MacOS/Claude "* && "$line" != *Helper* && "$line" == *" --user-data-dir="* ]] || continue
+    [[ "$(owning_data_dir "${line#* --user-data-dir=}" "$1")" == "$1" ]] || continue
     line="${line##[[:space:]]#}"
     print -- "${line%% *}"
     break
@@ -437,7 +452,10 @@ adopt_strays() {
     for i in {1..30}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
     kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
     sleep 1
-    launch_profile "$display" || true
+    # A subshell: this loop runs in the current shell, so an `err` in
+    # launch_profile (e.g. a root-owned clone) would exit the whole script,
+    # aborting the launch of an unrelated profile or the watch loop.
+    ( launch_profile "$display" ) || warn "Couldn't re-home '$display'."
   done
 }
 
@@ -595,12 +613,21 @@ bundle_script() {
 # the manager brings all of them to this version so an update never leaves
 # an old copy behind. Launchers whose profile has no launcher (removed with
 # --keep-data) stay removed.
+#
+# Claude.app is only needed for the launchers: Lanes may be installed before
+# Claude Desktop, and the watchdog and helper must still be set up then.
+# LAUNCHERS_SKIPPED tells cmd_setup not to record this run as done.
 sync_install() {
-  local claude_app d display
-  claude_app=$(find_claude_app)
+  local claude_app="" d display
+  typeset -g LAUNCHERS_SKIPPED=0
   for d in "$PROFILES_DIR"/*(N/); do
     display="${d:t}"
     [[ -d "$LAUNCHER_DIR/Claude $display.app" ]] || continue
+    if [[ -z "$claude_app" ]] && ! claude_app=$(find_claude_app 2>/dev/null); then
+      warn "Claude.app not found; launchers not refreshed. Opening Lanes again after installing Claude does it."
+      LAUNCHERS_SKIPPED=1
+      break
+    fi
     build_launcher "$(slugify "$display")" "$display" "$(color_of_profile "$d")" "$claude_app"
   done
   install_watchdog --quiet --restart
@@ -1025,9 +1052,16 @@ EOF
     return 0
   fi
   mkdir -p "${WATCH_PLIST:h}"
-  (( loaded )) && launchctl bootout "gui/$(id -u)/$WATCH_LABEL" 2>/dev/null
+  (( loaded )) && { launchctl bootout "gui/$(id -u)/$WATCH_LABEL" 2>/dev/null || true }
   mv "$tmp" "$WATCH_PLIST"
-  launchctl bootstrap "gui/$(id -u)" "$WATCH_PLIST"
+  # Right after a bootout, bootstrap often fails ("5: Input/output error")
+  # while the old job is still going away: retry for a few seconds.
+  local i
+  for i in {1..10}; do
+    launchctl bootstrap "gui/$(id -u)" "$WATCH_PLIST" 2>/dev/null && break
+    (( i < 10 )) || err "Couldn't load the watchdog: launchctl bootstrap gui/$(id -u) $WATCH_PLIST failed."
+    sleep 0.5
+  done
   [[ "$quiet" == "--quiet" ]] || ok "Watchdog installed: $WATCH_PLIST (runs: lanes watch)"
 }
 
@@ -1236,6 +1270,7 @@ cmd_setup() {
   local stamp="$CACHE_DIR/setup" want="$LANES_VERSION $SCRIPT_PATH"
   [[ "${1:-}" == "--if-needed" && "$(cat "$stamp" 2>/dev/null)" == "$want" ]] && return 0
   sync_install
+  (( LAUNCHERS_SKIPPED )) && return 0   # no stamp: the next launch retries
   mkdir -p "$CACHE_DIR"
   print -- "$want" > "$stamp"
 }
@@ -1333,9 +1368,17 @@ cmd_update() {
   local running=0
   quit_app "$app" && running=1
 
-  mv "$app" "$tmp/old" || err "Couldn't move the old Lanes aside."
+  # From here on the app is quit: a failed swap must reopen the old one, or
+  # the app's own updater leaves Lanes gone from the menu bar.
+  local reopen=0
+  if (( running || relaunch )) && [[ -z "${LANES_NO_OPEN:-}" ]]; then reopen=1; fi
+  if ! mv "$app" "$tmp/old"; then
+    (( reopen )) && open "$app"
+    err "Couldn't move the old Lanes aside."
+  fi
   if ! mv "$new" "$app"; then
-    mv "$tmp/old" "$app"
+    mv "$tmp/old" "$app" || true
+    (( reopen )) && open "$app"
     err "Couldn't install the new Lanes; the old one is back in place."
   fi
   ok "Lanes updated to $latest."
@@ -1343,7 +1386,7 @@ cmd_update() {
   # The new version's lanes points launchers and the watchdog at itself.
   zsh "$app/Contents/Resources/lanes" setup --if-needed >/dev/null 2>&1 ||
     warn "Refreshing launchers failed; opening Lanes retries it."
-  if (( running || relaunch )) && [[ -z "${LANES_NO_OPEN:-}" ]]; then open "$app"; fi
+  if (( reopen )); then open "$app"; fi
   return 0
 }
 

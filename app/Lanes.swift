@@ -486,6 +486,15 @@ final class ProfileStore: ObservableObject {
     // A version whose install failed isn't retried automatically this session.
     private var failedUpdate: String?
     private var updateTimer: Timer?
+    // The version an update was last started for, kept across launches:
+    // `lanes update` quits this app, so a failure after that never reaches
+    // the terminationHandler. Still being older than it on the next launch
+    // means it failed, and auto-update must not quit the app again for it.
+    private var updateAttempt: String? {
+        get { UserDefaults.standard.string(forKey: "updateAttempt") }
+        set { UserDefaults.standard.set(newValue, forKey: "updateAttempt") }
+    }
+    private static let updateLog = NSHomeDirectory() + "/Library/Caches/Lanes/update.log"
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
@@ -513,6 +522,14 @@ final class ProfileStore: ObservableObject {
     init(live: Bool = true) {
         self.live = live
         guard live else { return }
+        if let attempted = updateAttempt {
+            if versionLessThan(appVersion, attempted) {
+                failedUpdate = attempted
+                updateError = Self.updateLogError() ?? "The update to \(attempted) didn't finish."
+            } else {
+                updateAttempt = nil
+            }
+        }
         refresh()
         timers = [Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.refreshRunning()
@@ -590,9 +607,9 @@ final class ProfileStore: ObservableObject {
         let target = availableUpdate
         isUpdating = true
         updateError = nil
-        let logDir = NSHomeDirectory() + "/Library/Caches/Lanes"
-        let logPath = logDir + "/update.log"
-        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let logPath = Self.updateLog
+        try? FileManager.default.createDirectory(atPath: (logPath as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: logPath, contents: nil)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -605,6 +622,9 @@ final class ProfileStore: ObservableObject {
         // quit and the new version opens.
         p.terminationHandler = { proc in
             DispatchQueue.main.async {
+                // Seen here, so this session's failedUpdate covers it; the
+                // next launch may retry (a network blip shouldn't stick).
+                self.updateAttempt = nil
                 self.isUpdating = false
                 // Still running, yet the bundle holds another version: the
                 // swap happened but this process was never quit. Restart.
@@ -615,14 +635,13 @@ final class ProfileStore: ObservableObject {
                 }
                 if proc.terminationStatus != 0 {
                     self.failedUpdate = target
-                    let detail = (try? String(contentsOfFile: logPath, encoding: .utf8))?
-                        .split(separator: "\n").last { $0.hasPrefix("✗") }
-                        .map { String($0.dropFirst(2)) }
-                    self.updateError = detail ?? "The update failed. Details: ~/Library/Caches/Lanes/update.log"
+                    self.updateError = Self.updateLogError() ?? "The update failed."
                 }
             }
         }
+        updateAttempt = target
         do { try p.run() } catch {
+            updateAttempt = nil
             isUpdating = false
             failedUpdate = target
             updateError = error.localizedDescription
@@ -640,6 +659,13 @@ final class ProfileStore: ObservableObject {
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { updateError = error.localizedDescription; return }
         NSApp.terminate(nil)
+    }
+
+    // The last error `lanes update` logged, with a pointer to the full log.
+    private static func updateLogError() -> String? {
+        guard let line = (try? String(contentsOfFile: updateLog, encoding: .utf8))?
+            .split(separator: "\n").last(where: { $0.hasPrefix("✗") }) else { return nil }
+        return String(line.dropFirst(2)) + " Details: ~/Library/Caches/Lanes/update.log"
     }
 
     private func scheduleUsageTimer() {
@@ -928,9 +954,13 @@ final class ProfileStore: ObservableObject {
             if let r = line.range(of: "--user-data-dir=") {
                 let rest = String(line[r.upperBound...])
                 // The whole path, not a prefix: "Work" must not match "Workshop".
-                for p in profiles {
-                    if let d = p.dataDir, rest == d || rest.hasPrefix(d + " ") { found.insert(p.id) }
-                }
+                // ps joins argv with spaces, so "Client Acme" also starts with
+                // ".../Client "; the longest matching data dir is the owner.
+                // Mirrors owning_data_dir in bin/lanes.
+                let owner = profiles
+                    .filter { p in p.dataDir.map { rest == $0 || rest.hasPrefix($0 + " ") } ?? false }
+                    .max { ($0.dataDir?.count ?? 0) < ($1.dataDir?.count ?? 0) }
+                if let owner { found.insert(owner.id) }
             } else if line.contains("Claude.app/Contents/MacOS/Claude") {
                 found.insert("Default")
             }
