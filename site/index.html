@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lanes — every Claude account in its own lane</title>
 <meta name="description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left. Menu bar usage tracker, desktop widget, free and open source.">
-<meta name="theme-color" content="#241A28">
+<meta name="theme-color" content="#1B1320">
 <link rel="icon" href="images/logo.svg" type="image/svg+xml">
 
 <meta property="og:type" content="website">
@@ -20,110 +20,245 @@
 <meta name="twitter:description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left.">
 <meta name="twitter:image" content="https://pego.github.io/lanes/og.png">
 
+<link rel="preload" href="fonts/Inter.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- A plain eight-ray spark, the glyph on every profile tile. -->
+  <symbol id="spark" viewBox="0 0 24 24">
+    <g stroke="#fff" stroke-width="2.3" stroke-linecap="round">
+      <path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18"/>
+    </g>
+  </symbol>
+</svg>
+
 <header class="nav">
-  <a class="brand" href="#top"><img src="images/logo.svg" alt="" width="32" height="32"><span>Lanes</span></a>
+  <a class="brand" href="#top"><img src="images/logo.svg" alt="" width="30" height="30"><span>Lanes</span></a>
   <nav>
-    <a href="#features">Features</a>
+    <a href="#story">Tour</a>
+    <a href="#new">New lane</a>
     <a href="#install">Install</a>
-    <a href="https://github.com/pego/lanes">GitHub</a>
+    <a class="nav-gh" href="https://github.com/pego/lanes">GitHub</a>
   </nav>
 </header>
 
 <main id="top">
+
+  <!-- Hero -->
   <section class="hero">
-    <svg class="lanes-bg" width="2200" height="700" viewBox="0 0 2200 700" aria-hidden="true">
-      <path class="lane lane-coral" d="M360 -40V250A270 270 0 0 0 630 520H2300"/>
-      <path class="lane lane-azure" d="M534 -40V250A96 96 0 0 0 630 346H2300"/>
+    <svg class="hero-lanes" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <path class="hl hl-coral" d="M250 -60V420A330 330 0 0 0 580 750H1700"/>
+      <path class="hl hl-azure" d="M450 -60V420A130 130 0 0 0 580 550H1700"/>
     </svg>
     <div class="wrap hero-copy">
-      <p class="eyebrow">For Claude Desktop on macOS</p>
-      <h1>Every Claude account<br>in its own <em>lane.</em></h1>
+      <p class="eyebrow"><span class="pip"></span>For Claude Desktop on macOS</p>
+      <h1>Every Claude account <br class="br-wide">in its own <em>lane<span class="dot">.</span></em></h1>
       <p class="lede">Work, personal, one per client. Run them all side by side, each with its own login and chats, and always know which one has room left.</p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download for macOS</a>
+        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Download for macOS
+        </a>
         <a class="btn btn-ghost" href="https://github.com/pego/lanes">View on GitHub</a>
       </div>
-      <p class="fine">Free and open source · macOS 13+ · Apple Silicon and Intel</p>
+      <p class="fine">Free and open source · macOS&nbsp;13+ · Apple&nbsp;Silicon and&nbsp;Intel</p>
     </div>
-
-    <div class="wrap hero-shot">
-      <img src="images/window-dark.png" width="1720" height="1300" alt="The Lanes window: four profiles as numbered lanes, each with its 5-hour and weekly usage">
-    </div>
+    <a class="scroll-cue" href="#story" aria-label="Scroll to the tour"><span></span></a>
   </section>
 
-  <section class="band" id="features">
-    <div class="wrap">
-      <h2>One account at a time is the problem.</h2>
-      <p class="sub">Claude Desktop signs in to a single account. Lanes gives each one its own app, its own colored icon, and a place on the track.</p>
+  <!-- Scroll story: the app, running -->
+  <section class="story" id="story">
+    <div class="stage">
+      <div class="stage-inner">
 
-      <div class="cards">
-        <article class="card">
-          <h3><span class="dot coral"></span>Side by side</h3>
-          <p>Every lane is a separate Claude with its own login, chats, settings and connectors. Open them all at once. Nothing leaks between them.</p>
-        </article>
-        <article class="card">
-          <h3><span class="dot azure"></span>Usage at a glance</h3>
-          <p>5-hour and weekly limits for every account, live, with reset countdowns. A pace marker shows if you're burning faster than the clock.</p>
-        </article>
-        <article class="card">
-          <h3><span class="dot coral"></span>The lane with most room</h3>
-          <p>One click, or <kbd>⌥⌘B</kbd> from anywhere, opens the account with the most headroom left.</p>
-        </article>
-        <article class="card">
-          <h3><span class="dot azure"></span>Always in sight</h3>
-          <p>A menu bar gauge, a desktop widget, alerts at 80% and 95%, and a <code>lanes</code> command for your scripts.</p>
-        </article>
+        <div class="captions">
+          <ol class="rail" aria-hidden="true"><li><i></i></li><li><i></i></li><li><i></i></li><li><i></i></li></ol>
+          <article class="cap" data-cap="0">
+            <p class="kicker">01 · The track</p>
+            <h2>Every account gets its own lane.</h2>
+            <p>Each one is a separate Claude with its own login, chats, settings and colored icon. They all run at once, and nothing leaks between them.</p>
+          </article>
+          <article class="cap" data-cap="1">
+            <p class="kicker">02 · The clock</p>
+            <h2>Watch the track, not the clock.</h2>
+            <p>5-hour and weekly limits for every lane, live. The small mark is the pace marker: a bar that ends left of it is burning slower than the clock. Cross 80% and you get a heads-up.</p>
+          </article>
+          <article class="cap" data-cap="2">
+            <p class="kicker">03 · Most room</p>
+            <h2>Always know where there’s room.</h2>
+            <p>The lane with the most headroom floats to the top of the menu bar. One click, or <kbd>⌥⌘B</kbd> from anywhere, and you’re in it.</p>
+          </article>
+          <article class="cap" data-cap="3">
+            <p class="kicker">04 · Reset</p>
+            <h2>And the minute it resets, you’ll know.</h2>
+            <p>The alert is scheduled with macOS, so it lands right on time even if Lanes has quit. Back on the lane you love.</p>
+          </article>
+        </div>
+
+        <div class="desk" aria-label="A live replica of the Lanes window">
+          <div class="menubar">
+            <span class="mb-dot"></span>
+            <b class="mb-app">Claude Work</b>
+            <span class="mb-menus">File&nbsp;&nbsp;Edit&nbsp;&nbsp;View&nbsp;&nbsp;Window&nbsp;&nbsp;Help</span>
+            <span class="mb-spacer"></span>
+            <span class="mb-lanes" id="mbLanes"><span class="gauge"><i></i><i></i><i></i></span><b id="mbPct">9%</b></span>
+            <span class="mb-clock" id="mbClock">Wed 09:20</span>
+          </div>
+
+          <div class="win" id="win">
+            <div class="win-bar"><i></i><i></i><i></i></div>
+            <div class="win-head">
+              <img src="images/logo.svg" alt="" width="40" height="40">
+              <div class="wh-text">
+                <b>Lanes</b>
+                <small id="whSub">4 profiles · 2 running</small>
+              </div>
+              <span class="wh-tools">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2-4.9M19 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
+              <span class="wh-new"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>New Profile</span>
+            </div>
+            <div class="rows" id="rows"></div>
+            <div class="win-foot"><span class="live"></span><span id="winFoot">Usage updated just now</span></div>
+          </div>
+
+          <div class="panel" id="panel" aria-hidden="true">
+            <div class="pn-head"><b>Lanes</b><small>Updated just now</small></div>
+            <div class="pn-best" id="pnBest">
+              <span class="ico"><svg><use href="#spark"/></svg></span>
+              <div><small>Most room</small><b id="pnName">Studio</b> <span id="pnLeft">62% of 5h left</span></div>
+              <span class="pn-go"><span class="pn-focus">Focus</span><kbd id="pnKey">⌥⌘B</kbd></span>
+            </div>
+            <div class="pn-list" id="pnList"></div>
+          </div>
+
+          <div class="toast" id="toast80">
+            <img src="images/logo.svg" alt="" width="34" height="34">
+            <div><b>Work is at 80%</b><span>of its 5-hour limit. Studio has the most room.</span></div>
+            <small>now</small>
+          </div>
+          <div class="toast" id="toastReset">
+            <img src="images/logo.svg" alt="" width="34" height="34">
+            <div><b>Work has reset</b><span>Its 5-hour limit is back to full.</span></div>
+            <small>now</small>
+          </div>
+        </div>
+
       </div>
     </div>
   </section>
 
-  <section class="band alt">
+  <!-- New lane, interactive -->
+  <section class="band" id="new">
     <div class="wrap split">
       <div>
-        <h2>Watch the track, not the clock.</h2>
-        <p class="sub">The menu bar shows every lane's 5-hour usage next to the busiest percentage. It turns orange at 75% and red at 90%, so you see trouble before you hit it.</p>
-        <ul class="ticks">
-          <li>Alerts at 80% and 95%, and another the minute a limit resets</li>
-          <li>A week of history for every account</li>
-          <li>No account, no telemetry: usage is read with your own session</li>
-        </ul>
-      </div>
-      <picture>
-        <img src="images/menu-dark.png" width="660" alt="The Lanes menu bar panel: the profile with the most room on top, then every profile's usage">
-      </picture>
-    </div>
-  </section>
-
-  <section class="band">
-    <div class="wrap split flip">
-      <picture>
-        <img src="images/new-profile-dark.png" width="760" alt="The New Profile sheet, previewing a pink Claude Client Acme">
-      </picture>
-      <div>
+        <p class="kicker">Try it</p>
         <h2>A new lane in ten seconds.</h2>
-        <p class="sub">Name it, pick one of eight colors, and you get a fresh, empty Claude with a launcher in Spotlight and a matching tile in the Dock. The icon wears the lane's color, so you never sign in to the wrong account.</p>
-        <p class="sub">Claude's login link even lands on the right lane, however many are open.</p>
+        <p class="sub">Name it, pick one of eight colors, and you get a fresh, empty Claude with a launcher in Spotlight and a matching tile in the Dock. The icon wears the lane’s color, so you never sign in to the wrong account.</p>
+        <form class="maker" onsubmit="return false">
+          <label class="field">
+            <span>Name</span>
+            <input id="nlName" value="Client Acme" maxlength="18" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="swatches" id="swatches" role="radiogroup" aria-label="Color"></div>
+        </form>
+      </div>
+      <div class="preview">
+        <div class="spot">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="m15 15 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span class="spot-q" id="spotQ">Claude Client Acme</span>
+        </div>
+        <div class="spot-hit">
+          <span class="ico" id="nlIcoSmall"><svg><use href="#spark"/></svg></span>
+          <b id="nlTitle">Claude Client Acme</b>
+          <small>Application</small>
+        </div>
+        <div class="big"><span class="ico ico-xl" id="nlIco"><svg><use href="#spark"/></svg></span></div>
+        <div class="dock" id="dock">
+          <span class="ico" style="--ci:#D97857"><svg><use href="#spark"/></svg></span>
+          <span class="ico" style="--ci:#548FD4"><svg><use href="#spark"/></svg></span>
+          <span class="ico" style="--ci:#5CB06B"><svg><use href="#spark"/></svg></span>
+          <span class="dock-sep"></span>
+          <span class="ico dock-new" id="dockNew"><svg><use href="#spark"/></svg></span>
+        </div>
       </div>
     </div>
   </section>
 
-  <section class="band alt" id="install">
+  <!-- Always in sight -->
+  <section class="band alt" id="more">
     <div class="wrap">
+      <p class="kicker">Always in sight</p>
+      <h2>Wherever you look, there’s the track.</h2>
+      <div class="bento">
+        <article class="tile t-menubar">
+          <div class="tile-art">
+            <div class="mbs">
+              <span class="mb-lanes"><span class="gauge" style="--g1:.41;--g2:.2;--g3:.12"><i></i><i></i><i></i></span><b>41%</b></span>
+              <span class="mb-lanes warn"><span class="gauge" style="--g1:.86;--g2:.4;--g3:.07"><i></i><i></i><i></i></span><b>86%</b></span>
+              <span class="mb-lanes crit"><span class="gauge" style="--g1:.95;--g2:.5;--g3:.3"><i></i><i></i><i></i></span><b>95%</b></span>
+            </div>
+          </div>
+          <h3>A gauge in the menu bar</h3>
+          <p>One tiny lane per account, filled to its 5-hour usage. Orange at 75%, red at 90%, so you see trouble coming.</p>
+        </article>
+        <article class="tile t-widget">
+          <div class="tile-art">
+            <div class="widget">
+              <div class="wg-row" style="--ci:#548FD4"><i></i><b>Work</b><span class="wg-bar"><span style="width:86%;background:var(--warn)"></span></span><small>38m</small></div>
+              <div class="wg-row" style="--ci:#5CB06B"><i></i><b>Studio</b><span class="wg-bar"><span style="width:7%"></span></span><small>4h 40m</small></div>
+              <div class="wg-row" style="--ci:#D97857"><i></i><b>Default</b><span class="wg-bar"><span style="width:23%"></span></span><small>3h 11m</small></div>
+            </div>
+          </div>
+          <h3>A desktop widget</h3>
+          <p>Three sizes with live reset countdowns. Click a profile to open it.</p>
+        </article>
+        <article class="tile t-cli">
+          <div class="tile-art">
+            <pre class="term"><span class="p">$</span> lanes launch --best
+<span class="p">$</span> lanes usage --json | jq '.profiles[0].fiveHour'
+<span class="o">86</span>
+<span class="p">$</span> lanes add "client acme" --color pink<span class="caret"></span></pre>
+          </div>
+          <h3>A command line, too</h3>
+          <p><code>lanes</code> drives everything the app does, so your scripts and status lines can as well.</p>
+        </article>
+        <article class="tile t-privacy">
+          <h3>No account. No telemetry.</h3>
+          <p>Usage is read with each profile’s own session, straight from claude.ai. Nothing else leaves your Mac.</p>
+          <p class="big-num"><span class="num-tab">~4,000</span><small>lines of Swift and shell you can read in an afternoon.</small></p>
+        </article>
+      </div>
+      <ul class="extras">
+        <li><b>Isolated Claude Code.</b> The Code and Cowork tabs get their own config per lane.</li>
+        <li><b>Hands-off updates.</b> A watchdog puts each lane back on its account after Claude updates.</li>
+        <li><b>Sign-in that lands right.</b> Claude’s login link goes to the lane you clicked it in.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="band finale" id="install">
+    <svg class="finale-lanes" viewBox="0 0 1200 400" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M-20 60C400 60 500 200 600 200S800 340 1220 340" stroke="#D97857"/>
+      <path d="M-20 140C400 140 500 200 600 200S800 260 1220 260" stroke="#548FD4"/>
+      <path d="M-20 260C400 260 500 200 600 200S800 140 1220 140" stroke="#5CB06B"/>
+      <path d="M-20 340C400 340 500 200 600 200S800 60 1220 60" stroke="#9E78D4"/>
+    </svg>
+    <div class="wrap finale-copy">
       <h2>Get on the track.</h2>
       <ol class="steps">
-        <li><b>Download</b> <code>Lanes.zip</code>, open it, drag <b>Lanes</b> into Applications.</li>
-        <li><b>Open it once, the long way.</b> It isn't from the App Store: click <b>Done</b>, then <b>Privacy &amp; Security → Open Anyway</b>.</li>
-        <li><b>Create a profile</b> with <b>New Profile</b>, open it and sign in.</li>
+        <li><b>Download</b> <code>Lanes.zip</code> and drag <b>Lanes</b> into Applications.</li>
+        <li><b>Open it once, the long way:</b> click Done, then <b>Privacy &amp; Security → Open Anyway</b>.</li>
+        <li><b>New Profile</b>, open it, sign in. That’s a lane.</li>
       </ol>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download Lanes.zip</a>
-        <a class="btn btn-ghost" href="https://github.com/pego/lanes#install">Full instructions</a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download Lanes for macOS</a>
       </div>
-      <p class="fine">Lanes runs the same Claude app, unmodified, signed in to accounts you own. Independent project, not affiliated with or endorsed by Anthropic.</p>
+      <p class="fine">Lanes runs the same Claude app, unmodified, signed in to accounts you own.<br>Independent project, not affiliated with or endorsed by Anthropic.</p>
     </div>
   </section>
 </main>
