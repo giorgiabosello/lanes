@@ -3,6 +3,22 @@
 // widget and for `lanes usage`.
 
 import SwiftUI
+import AppKit
+
+// The brand: coral and azure, the two lanes of the logo. Each has a lighter
+// shade for dark appearance and a deeper one that keeps its contrast on white.
+// These tint controls and accents; the lanes themselves wear the profile colors.
+enum Brand {
+    private static func adaptive(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let c = isDark ? dark : light
+            return NSColor(srgbRed: c.0 / 255, green: c.1 / 255, blue: c.2 / 255, alpha: 1)
+        })
+    }
+    static let coral = adaptive(light: (0xE0, 0x56, 0x4B), dark: (0xF4, 0x73, 0x69))
+    static let azure = adaptive(light: (0x1E, 0x88, 0xD6), dark: (0x88, 0xDC, 0xFF))
+}
 
 // Mirrors the HUES palette in bin/lanes — names must stay in sync.
 struct ProfileColor: Identifiable, Hashable {

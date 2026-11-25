@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Lanes · Sfalsata · Corallo e azzurro</title>
+  <path fill="#241A28" d="M297 64H727C895 64 960 129 960 297V727C960 895 895 960 727 960H297C129 960 64 895 64 727V297C64 129 129 64 297 64Z"/>
+  <!-- The two centerline arcs share center (536, 488).
+       Their radii differ by 168, leaving a 56-unit gap between 112-unit strokes. -->
+  <g fill="none" stroke-width="112" stroke-linecap="butt">
+    <path stroke="#F47369" d="M264 208V488A272 272 0 0 0 536 760H816"/>
+    <path stroke="#88DCFF" d="M432 336V488A104 104 0 0 0 536 592H688"/>
+  </g>
+</svg>

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/icon.png" width="112" alt="Lanes icon">
+  <img src="docs/images/logo.svg" width="112" alt="Lanes icon">
 </p>
 
 <h1 align="center">Lanes</h1>

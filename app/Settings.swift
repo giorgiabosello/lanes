@@ -60,6 +60,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .toggleStyle(.switch)
+        .tint(Brand.coral)
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
     }

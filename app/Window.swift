@@ -137,7 +137,8 @@ struct LanesWindow: View {
             Button { store.showAdd = true } label: {
                 Label("New Profile", systemImage: "plus")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(Brand.coral)
             .controlSize(.large)
             .keyboardShortcut("n")
         }

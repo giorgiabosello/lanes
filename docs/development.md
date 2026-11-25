@@ -77,5 +77,5 @@ account. Run it after any visual change.
 swift scripts/make-icon.swift app/AppIcon.icns
 ```
 
-It draws three profile cards with Clawd's eyes in the profile colors, and
+It draws two lanes with Clawd's eyes in the profile colors, and
 holds up in a single color.
