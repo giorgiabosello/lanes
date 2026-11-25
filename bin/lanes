@@ -714,7 +714,7 @@ on lanesCommand()
 end lanesCommand
 
 on addProfile()
-	set dlg to display dialog "Profile name (e.g. personal, client-acme):" default answer "" with title "Add Claude profile"
+	set dlg to display dialog "Profile name (e.g. personal, client-acme):" default answer "" with title "Add profile"
 	set rawName to text returned of dlg
 	if rawName is "" then return
 	try
@@ -723,19 +723,19 @@ on addProfile()
 		display alert "Could not create profile" message msg as critical
 		return
 	end try
-	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running. (The Lanes menu bar app routes it to the right profile instead.)" with title "Add Claude profile" buttons {"OK"} default button "OK"
+	display dialog "Profile created — it's now in the list, and 'Claude " & rawName & "' is searchable in Spotlight." & return & return & "Before its FIRST sign-in: quit every other Claude window. The login link lands on whichever instance is running. (The Lanes menu bar app routes it to the right profile instead.)" with title "Add profile" buttons {"OK"} default button "OK"
 end addProfile
 
 on removeProfile(appSupport)
 	set names to profileNames(appSupport)
 	if names is {} then return
-	set sel to choose from list names with title "Remove Claude profile" with prompt "Which profile?"
+	set sel to choose from list names with title "Remove profile" with prompt "Which profile?"
 	if sel is false then return
 	set target to (item 1 of sel) as text
-	set btn to button returned of (display dialog "Remove \"" & target & "\"?" & return & return & "Launcher Only deletes the Spotlight app but keeps chats, login, and settings — the profile stays in this list and can be launched or fully removed later." & return & return & "Delete Everything also erases the data folder. Permanent." with title "Remove Claude profile" buttons {"Cancel", "Delete Everything", "Launcher Only"} default button "Launcher Only" cancel button "Cancel")
+	set btn to button returned of (display dialog "Remove \"" & target & "\"?" & return & return & "Launcher Only deletes the Spotlight app but keeps chats, login, and settings — the profile stays in this list and can be launched or fully removed later." & return & return & "Delete Everything also erases the data folder. Permanent." with title "Remove profile" buttons {"Cancel", "Delete Everything", "Launcher Only"} default button "Launcher Only" cancel button "Cancel")
 	set flag to "--keep-data"
 	if btn is "Delete Everything" then
-		set check to display dialog "Really delete ALL data for \"" & target & "\" — chats, login, settings? This cannot be undone." with title "Remove Claude profile" buttons {"Cancel", "Delete"} default button "Cancel" cancel button "Cancel"
+		set check to display dialog "Really delete ALL data for \"" & target & "\" — chats, login, settings? This cannot be undone." with title "Remove profile" buttons {"Cancel", "Delete"} default button "Cancel" cancel button "Cancel"
 		set flag to "--delete-data"
 	end if
 	try

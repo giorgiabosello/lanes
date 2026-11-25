@@ -180,7 +180,7 @@ struct LanesWidget: Widget {
             UsageWidgetView(entry: entry)
         }
         .configurationDisplayName("Claude Usage")
-        .description("5-hour and weekly usage for each Claude profile.")
+        .description("5-hour and weekly usage for each profile.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
