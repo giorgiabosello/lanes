@@ -82,11 +82,39 @@ Not solvable from the outside: the mobile apps keep one session and offer
 no way around it. On a phone, the app plus claude.ai in the browser is the
 only two-account setup.
 
+### Curl or DMG?
+
+Either installs the same app. The command
+
+```sh
+curl -fsSL https://lanes.pego.tech/install | sh
+```
+
+is quicker: macOS only asks "Open Anyway" about files a browser downloads,
+and curl isn't one. The [DMG](https://github.com/pego/lanes/releases/latest/download/Lanes.dmg)
+works the usual way, but because Lanes isn't notarized by Apple (that takes
+a paid developer account), its first launch needs **System Settings →
+Privacy & Security → Open Anyway**. The [install script](../site/install) is
+short; read it before you run it if you like. It checks the app's signature
+before installing.
+
+### How do I update Lanes?
+
+You don't have to. Lanes checks GitHub every few hours, installs a new
+version and reopens, without the Open Anyway step. To be asked first, turn
+off **Settings → Updates → Install updates automatically**: the menu bar
+panel then shows an **Update** button. From the Terminal: `lanes update`
+(or `lanes update --check` to just look). Running the curl command again
+also installs the latest version. Profiles, logins and colors are never
+touched by an update.
+
+Versions before 0.8.0 can't update themselves: run the curl command once.
+
 ### I don't have the Xcode tools. Does that matter?
 
-Not for the downloaded app. It ships everything prebuilt, including the
-small helper that tints icons and focuses windows. Only building from
-source needs them.
+Not for the curl install or the DMG. They ship everything prebuilt,
+including the small helper that tints icons and focuses windows. Only
+building from source needs them.
 
 ### How do I remove Lanes completely?
 
@@ -95,3 +123,5 @@ source needs them.
 2. Run `lanes watchdog uninstall`.
 3. Delete Lanes from Applications, and
    `~/Library/Application Support/Lanes` if anything is left.
+4. If you installed with curl, also delete the `lanes` command it linked:
+   `rm "$(command -v lanes)"`.

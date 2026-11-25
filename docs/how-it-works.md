@@ -165,6 +165,29 @@ The "Claude Work" you find in Spotlight is a tiny `osacompile` applet in
   would otherwise override the icon of the running app;
 - a fresh ad-hoc signature after these edits.
 
+### Installing and updating Lanes itself
+
+Lanes is ad-hoc signed, not notarized: notarization needs a paid Apple
+developer account. Gatekeeper only stops apps that carry the
+`com.apple.quarantine` attribute, which browsers add to what they download
+and curl doesn't. So:
+
+- **The DMG**, downloaded in a browser, is quarantined, and its first launch
+  needs Open Anyway.
+- **The curl installer** (`site/install`, served at lanes.pego.tech/install)
+  downloads `Lanes.zip` from the latest GitHub release, checks the bundle id
+  and that `codesign --verify --deep --strict` passes, then moves the app
+  into Applications. Nothing is quarantined, so there's no prompt.
+- **Updates** work the same way. The app asks GitHub where
+  `releases/latest` redirects (`…/tag/v0.8.0`) shortly after launch and
+  every six hours. When there's a newer version, it runs its bundled
+  `lanes update`, detached and logging to `~/Library/Caches/Lanes/update.log`.
+  That downloads and checks the zip, quits Lanes, moves the old bundle aside
+  (putting it back if the swap fails), runs the new version's `lanes setup`
+  to repoint launchers and the watchdog, and reopens it.
+
+The check sends nothing but the request for that one URL.
+
 ### What's never touched
 
 Your main Claude keeps using `~/Library/Application Support/Claude`. Lanes

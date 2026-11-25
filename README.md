@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><b>Download for macOS</b></a> ·
+  <a href="#install"><b>Install</b></a> ·
   <a href="https://lanes.pego.tech">Website</a> ·
   <a href="docs/how-it-works.md">How it works</a> ·
   <a href="docs/cli.md">Command line</a> ·
