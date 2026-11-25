@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lanes — every Claude account in its own lane</title>
+<meta name="description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left. Menu bar usage tracker, desktop widget, free and open source.">
+<meta name="theme-color" content="#241A28">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Lanes — every Claude account in its own lane">
+<meta property="og:description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left.">
+<meta property="og:image" content="https://pego.github.io/lanes/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:url" content="https://pego.github.io/lanes/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Lanes — every Claude account in its own lane">
+<meta name="twitter:description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left.">
+<meta name="twitter:image" content="https://pego.github.io/lanes/og.png">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#top"><img src="images/logo.svg" alt="" width="32" height="32"><span>Lanes</span></a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/pego/lanes">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <svg class="lanes-bg" width="2200" height="700" viewBox="0 0 2200 700" aria-hidden="true">
+      <path class="lane lane-coral" d="M360 -40V250A270 270 0 0 0 630 520H2300"/>
+      <path class="lane lane-azure" d="M534 -40V250A96 96 0 0 0 630 346H2300"/>
+    </svg>
+    <div class="wrap hero-copy">
+      <p class="eyebrow">For Claude Desktop on macOS</p>
+      <h1>Every Claude account<br>in its own <em>lane.</em></h1>
+      <p class="lede">Work, personal, one per client. Run them all side by side, each with its own login and chats, and always know which one has room left.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download for macOS</a>
+        <a class="btn btn-ghost" href="https://github.com/pego/lanes">View on GitHub</a>
+      </div>
+      <p class="fine">Free and open source · macOS 13+ · Apple Silicon and Intel</p>
+    </div>
+
+    <div class="wrap hero-shot">
+      <img src="images/window-dark.png" width="1720" height="1300" alt="The Lanes window: four profiles as numbered lanes, each with its 5-hour and weekly usage">
+    </div>
+  </section>
+
+  <section class="band" id="features">
+    <div class="wrap">
+      <h2>One account at a time is the problem.</h2>
+      <p class="sub">Claude Desktop signs in to a single account. Lanes gives each one its own app, its own colored icon, and a place on the track.</p>
+
+      <div class="cards">
+        <article class="card">
+          <h3><span class="dot coral"></span>Side by side</h3>
+          <p>Every lane is a separate Claude with its own login, chats, settings and connectors. Open them all at once. Nothing leaks between them.</p>
+        </article>
+        <article class="card">
+          <h3><span class="dot azure"></span>Usage at a glance</h3>
+          <p>5-hour and weekly limits for every account, live, with reset countdowns. A pace marker shows if you're burning faster than the clock.</p>
+        </article>
+        <article class="card">
+          <h3><span class="dot coral"></span>The lane with most room</h3>
+          <p>One click, or <kbd>⌥⌘B</kbd> from anywhere, opens the account with the most headroom left.</p>
+        </article>
+        <article class="card">
+          <h3><span class="dot azure"></span>Always in sight</h3>
+          <p>A menu bar gauge, a desktop widget, alerts at 80% and 95%, and a <code>lanes</code> command for your scripts.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band alt">
+    <div class="wrap split">
+      <div>
+        <h2>Watch the track, not the clock.</h2>
+        <p class="sub">The menu bar shows every lane's 5-hour usage next to the busiest percentage. It turns orange at 75% and red at 90%, so you see trouble before you hit it.</p>
+        <ul class="ticks">
+          <li>Alerts at 80% and 95%, and another the minute a limit resets</li>
+          <li>A week of history for every account</li>
+          <li>No account, no telemetry: usage is read with your own session</li>
+        </ul>
+      </div>
+      <picture>
+        <img src="images/menu-dark.png" width="660" alt="The Lanes menu bar panel: the profile with the most room on top, then every profile's usage">
+      </picture>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap split flip">
+      <picture>
+        <img src="images/new-profile-dark.png" width="760" alt="The New Profile sheet, previewing a pink Claude Client Acme">
+      </picture>
+      <div>
+        <h2>A new lane in ten seconds.</h2>
+        <p class="sub">Name it, pick one of eight colors, and you get a fresh, empty Claude with a launcher in Spotlight and a matching tile in the Dock. The icon wears the lane's color, so you never sign in to the wrong account.</p>
+        <p class="sub">Claude's login link even lands on the right lane, however many are open.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band alt" id="install">
+    <div class="wrap">
+      <h2>Get on the track.</h2>
+      <ol class="steps">
+        <li><b>Download</b> <code>Lanes.zip</code>, open it, drag <b>Lanes</b> into Applications.</li>
+        <li><b>Open it once, the long way.</b> It isn't from the App Store: click <b>Done</b>, then <b>Privacy &amp; Security → Open Anyway</b>.</li>
+        <li><b>Create a profile</b> with <b>New Profile</b>, open it and sign in.</li>
+      </ol>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/pego/lanes/releases/latest/download/Lanes.zip">Download Lanes.zip</a>
+        <a class="btn btn-ghost" href="https://github.com/pego/lanes#install">Full instructions</a>
+      </div>
+      <p class="fine">Lanes runs the same Claude app, unmodified, signed in to accounts you own. Independent project, not affiliated with or endorsed by Anthropic.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span class="brand"><img src="images/logo.svg" alt="" width="24" height="24"> Lanes</span>
+    <span>
+      <a href="https://github.com/pego/lanes">GitHub</a> ·
+      <a href="https://github.com/pego/lanes/blob/main/docs/how-it-works.md">How it works</a> ·
+      <a href="https://github.com/pego/lanes/blob/main/docs/faq.md">FAQ</a> ·
+      <a href="https://github.com/pego/lanes/blob/main/LICENSE">MIT License</a>
+    </span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
