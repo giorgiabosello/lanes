@@ -1,0 +1,362 @@
+// Unit tests for the app's logic: parsing claude.ai's replies (against saved
+// ones in tests/fixtures), cookie decryption, the stale/fallback rules, the
+// forecast, history and version compare. Compiled with the app's sources by
+// scripts/unit-tests.sh; no XCTest, so the Command Line Tools are enough.
+// Never touches the network, the Keychain or real profiles.
+
+import Foundation
+import CommonCrypto
+
+private var failures = 0
+private var checks = 0
+private var current = ""
+
+private func expect(_ ok: Bool, _ what: @autoclosure () -> String = "", line: Int = #line) {
+    checks += 1
+    if !ok {
+        failures += 1
+        print("FAIL \(current) (UnitTests.swift:\(line)) \(what())")
+    }
+}
+
+private func equal<T: Equatable>(_ a: T, _ b: T, line: Int = #line) {
+    expect(a == b, "\(a) != \(b)", line: line)
+}
+
+private func test(_ name: String, _ body: () throws -> Void) {
+    current = name
+    do { try body() } catch { failures += 1; print("FAIL \(name): threw \(error)") }
+}
+
+private func test(_ name: String, _ body: () async throws -> Void) async {
+    current = name
+    do { try await body() } catch { failures += 1; print("FAIL \(name): threw \(error)") }
+}
+
+private var fixtures = "tests/fixtures"
+private func fixture(_ name: String) throws -> Data {
+    try Data(contentsOf: URL(fileURLWithPath: fixtures + "/" + name))
+}
+private func fixtureJSON(_ name: String) throws -> Any {
+    try JSONSerialization.jsonObject(with: try fixture(name))
+}
+
+private func iso(_ s: String) -> Date { ISO8601DateFormatter().date(from: s)! }
+
+// AES-128-CBC the way Chromium stores cookies on macOS: "v10" + ciphertext.
+private func encryptCookie(_ plain: Data, key: Data) -> Data {
+    var out = Data(count: plain.count + kCCBlockSizeAES128)
+    var n = 0
+    let cap = out.count
+    let iv = [UInt8](repeating: 0x20, count: 16)
+    _ = out.withUnsafeMutableBytes { o in
+        CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), CCOptions(kCCOptionPKCS7Padding),
+                [UInt8](key), 16, iv, [UInt8](plain), plain.count, o.baseAddress, cap, &n)
+    }
+    return Data("v10".utf8) + out.prefix(n)
+}
+
+@main
+enum UnitTests {
+    static func main() async {
+        if CommandLine.arguments.count > 1 { fixtures = CommandLine.arguments[1] }
+
+        // MARK: versions
+
+        test("versionLessThan") {
+            expect(versionLessThan("0.9.0", "0.9.1"))
+            expect(versionLessThan("0.9.9", "0.10.0"))
+            expect(versionLessThan("1.2", "1.2.1"))
+            expect(!versionLessThan("1.2.0", "1.2"))
+            expect(!versionLessThan("0.10.0", "0.9.9"))
+            expect(!versionLessThan("1.0.0", "1.0.0"))
+        }
+
+        // MARK: claude.ai replies
+
+        test("parseUsageReply reads limits, resets and model limits") {
+            let j = try fixtureJSON("usage-chat.json") as! [String: Any]
+            let u = parseUsageReply(j)
+            equal(u.fiveHour, 42)
+            equal(u.sevenDay, 17)
+            equal(u.error, nil)
+            // Microseconds and a numeric offset, as claude.ai sends them.
+            expect(u.fiveHourReset != nil, "five_hour resets_at didn't parse")
+            equal(u.fiveHourReset.map { Int($0.timeIntervalSince1970) }, Int(iso("2026-11-25T15:00:00Z").timeIntervalSince1970))
+            equal(u.sevenDayReset, iso("2026-11-28T09:00:00Z"))
+            // Null limits are skipped, strings are read as numbers, unknown
+            // families get a readable label, sorted by key.
+            equal(u.models.map(\.key), ["seven_day_new_family", "seven_day_opus"])
+            equal(u.models.map(\.label), ["New Family", "Opus"])
+            equal(u.models.map(\.used), [3, 8.5])
+            equal(u.models.first?.reset, nil)
+        }
+
+        test("parseUsageReply on an organization without chat limits") {
+            let u = parseUsageReply(try fixtureJSON("usage-api.json") as! [String: Any])
+            expect(u.hasNoData)
+            expect(u.models.isEmpty)
+        }
+
+        await test("usage() skips organizations without numbers") {
+            let orgs = try fixtureJSON("organizations.json")
+            var asked: [String] = []
+            let r = try await usage(organizations: orgs) { id in
+                asked.append(id)
+                return try fixtureJSON(id.hasSuffix("1") ? "usage-api.json" : "usage-chat.json")
+            }
+            equal(asked.count, 2)
+            equal(r.usage.fiveHour, 42)
+            equal(r.raw.count, 2)
+            equal(r.raw.last?["name"] as? String, "Personal")
+        }
+
+        await test("usage() survives one organization failing") {
+            let orgs = try fixtureJSON("organizations.json")
+            let r = try await usage(organizations: orgs) { id in
+                if id.hasSuffix("1") { throw usageError("HTTP 500") }
+                return try fixtureJSON("usage-chat.json")
+            }
+            equal(r.usage.sevenDay, 17)
+        }
+
+        await test("usage() flags a format change when no organization answers") {
+            let orgs = try fixtureJSON("organizations.json")
+            let r = try await usage(organizations: orgs) { _ in ["unexpected": true] as [String: Any] }
+            expect(r.usage.hasNoData, "an empty reply should read as no data")
+            let none = try await usage(organizations: orgs) { _ in throw usageError("HTTP 404", formatChanged: true) }
+            equal(none.usage.error, "unexpected response")
+            expect(none.usage.formatChanged)
+        }
+
+        await test("usage() with no organizations throws") {
+            for orgs: Any in [[[String: Any]](), ["not": "a list"]] {
+                do {
+                    _ = try await usage(organizations: orgs) { _ in [:] as [String: Any] }
+                    expect(false, "expected a throw for \(orgs)")
+                } catch {
+                    equal(error.localizedDescription, "no organization")
+                }
+            }
+        }
+
+        test("isFormatError") {
+            expect(isFormatError(usageError("HTTP 404", formatChanged: true)))
+            expect(!isFormatError(usageError("HTTP 500")))
+            expect(isFormatError(NSError(domain: NSCocoaErrorDomain, code: 3840)))
+            expect(!isFormatError(URLError(.timedOut)))
+        }
+
+        // MARK: cookies
+
+        test("decryptCookie round-trips Chromium's v10 format") {
+            let key = try ChromiumKey.derive(password: "test-password")
+            equal(key.count, 16)
+            equal(try ChromiumKey.derive(password: "test-password"), key)
+            expect(try ChromiumKey.derive(password: "other") != key)
+            let blob = encryptCookie(Data("sk-ant-abc".utf8), key: key)
+            equal(decryptCookie(blob, key: key), "sk-ant-abc")
+            // Newer Chromium: a 32-byte host hash before the value.
+            let hashed = encryptCookie(Data(repeating: 0xFF, count: 32) + Data("value".utf8), key: key)
+            equal(decryptCookie(hashed, key: key), "value")
+            // Not v10, or the wrong key.
+            equal(decryptCookie(Data("v11xxxxxxxxxxxxxxxx".utf8), key: key), nil)
+            equal(decryptCookie(blob, key: try ChromiumKey.derive(password: "other")), nil)
+        }
+
+        test("Data(hexString:)") {
+            equal(Data(hexString: "00ff10"), Data([0x00, 0xFF, 0x10]))
+            equal(Data(hexString: "abc"), nil)
+            equal(Data(hexString: "zz"), nil)
+        }
+
+        // MARK: Claude Desktop's record
+
+        test("LocalUsage.latest picks the newest reading with numbers") {
+            let r = LocalUsage.latest(json: try fixture("plan-usage-history.json"))
+            equal(r?.t, Date(timeIntervalSince1970: 1795604411.441))
+            equal(r?.fiveHour, 22)
+            equal(r?.sevenDay, 39)
+            equal(LocalUsage.latest(json: Data("not json".utf8)), nil)
+            equal(LocalUsage.latest(json: Data(#"{"version":3,"samples":"nope"}"#.utf8)), nil)
+            equal(LocalUsage.latest(json: Data(#"{"samples":[]}"#.utf8)), nil)
+            equal(LocalUsage.latest(dataDir: "/nonexistent"), nil)
+        }
+
+        // MARK: stale numbers and the fallback
+
+        let now = iso("2026-11-25T12:00:00Z")
+        let ok = Usage(fiveHour: 40, sevenDay: 20, fiveHourReset: now.addingTimeInterval(3600),
+                       sevenDayReset: now.addingTimeInterval(3 * 86400), error: nil)
+        let failed = Usage(fiveHour: nil, sevenDay: nil, error: "HTTP 500")
+        func merge(_ fresh: Usage, prev: Usage?, at: Date?, local: LocalUsage.Reading?) -> Usage {
+            ProfileStore.merge(fresh: fresh, previous: prev, previousAt: at, local: local, now: now)
+        }
+
+        test("merge: a successful check passes through") {
+            equal(merge(ok, prev: nil, at: nil, local: nil), ok)
+        }
+
+        test("merge: signing out clears the lane at once") {
+            let out = Usage(fiveHour: nil, sevenDay: nil, error: "session expired")
+            equal(merge(out, prev: ok, at: now, local: LocalUsage.Reading(t: now, fiveHour: 1, sevenDay: 1)), out)
+        }
+
+        test("merge: a failed check keeps the last numbers for an hour") {
+            let at = now.addingTimeInterval(-600)
+            let u = merge(failed, prev: ok, at: at, local: nil)
+            equal(u.fiveHour, 40)
+            equal(u.staleSince, at)
+            equal(u.staleError, "HTTP 500")
+            expect(!u.fromClaudeDesktop)
+            // Already stale: the clock runs from the first failure.
+            equal(merge(failed, prev: u, at: now, local: nil).staleSince, at)
+            // Past the hour: blank.
+            equal(merge(failed, prev: ok, at: now.addingTimeInterval(-3601), local: nil), failed)
+        }
+
+        test("merge: Claude Desktop's newer reading wins") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-120), fiveHour: 55, sevenDay: 21)
+            let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHour, 55)
+            equal(u.sevenDay, 21)
+            equal(u.staleSince, local.t)
+            expect(u.fromClaudeDesktop)
+            // The previous reset times still ahead, and after the reading, are kept.
+            equal(u.fiveHourReset, ok.fiveHourReset)
+            equal(u.sevenDayReset, ok.sevenDayReset)
+        }
+
+        test("merge: Claude Desktop's older reading loses") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-1200), fiveHour: 5, sevenDay: 5)
+            let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHour, 40)
+            expect(!u.fromClaudeDesktop)
+        }
+
+        test("merge: no reading of Lanes' own yet (launched offline)") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-900), fiveHour: 12, sevenDay: nil)
+            let u = merge(failed, prev: nil, at: nil, local: local)
+            equal(u.fiveHour, 12)
+            equal(u.sevenDay, nil)
+            equal(u.fiveHourReset, nil)
+            expect(u.fromClaudeDesktop)
+            expect(!u.hasNoData)
+            // Too old to show.
+            let old = LocalUsage.Reading(t: now.addingTimeInterval(-7200), fiveHour: 12, sevenDay: nil)
+            equal(merge(failed, prev: nil, at: nil, local: old), failed)
+        }
+
+        test("merge: a reset that has passed isn't carried over") {
+            var prev = ok
+            prev.fiveHourReset = now.addingTimeInterval(-60)
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-30), fiveHour: 3, sevenDay: 20)
+            let u = merge(failed, prev: prev, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHourReset, nil)
+            equal(u.sevenDayReset, ok.sevenDayReset)
+        }
+
+        test("merge: a format change is still reported while stale") {
+            let gone = Usage(fiveHour: nil, sevenDay: nil, error: "HTTP 404", formatChanged: true)
+            let u = merge(gone, prev: ok, at: now, local: nil)
+            expect(u.formatChanged)
+            equal(u.staleError, "HTTP 404")
+        }
+
+        // MARK: timeouts
+
+        await test("withTimeout returns a fast result") {
+            let v = try await withTimeout(1) { 7 }
+            equal(v, 7)
+        }
+
+        await test("withTimeout gives up on a slow one") {
+            let start = Date()
+            do {
+                _ = try await withTimeout(0.2) { () async throws -> Int in
+                    try await offCooperativePool { Thread.sleep(forTimeInterval: 2); return 1 }
+                }
+                expect(false, "expected a timeout")
+            } catch {
+                equal(error.localizedDescription, "timed out")
+                expect(Date().timeIntervalSince(start) < 1.5, "took \(Date().timeIntervalSince(start))s")
+            }
+        }
+
+        await test("withTimeout passes errors through") {
+            do {
+                _ = try await withTimeout(1) { () async throws -> Int in throw usageError("not signed in") }
+                expect(false, "expected a throw")
+            } catch {
+                equal(error.localizedDescription, "not signed in")
+            }
+        }
+
+        // MARK: forecast and history
+
+        test("Forecast.pace projects the recent rate to the reset") {
+            let reset = now.addingTimeInterval(2 * 3600)
+            // 10% → 30% over the last hour: 20%/h, two hours left.
+            let p = Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                  samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now)
+            equal(p.map { ($0.atReset * 10).rounded() / 10 }, 70)
+            equal(p?.runsOutAt, nil)
+            // 40%/h from 60%: out in an hour, before the reset.
+            let fast = Forecast.pace(value: 60, reset: reset, window: LimitWindow.fiveHour,
+                                     samples: [(now.addingTimeInterval(-3600), 20)], lookback: 3600, minSpan: 900, now: now)
+            equal(fast?.atReset, 100)
+            equal(fast?.runsOutAt.map { Int($0.timeIntervalSince(now)) }, 3600)
+        }
+
+        test("Forecast.pace needs enough history, in this window") {
+            let reset = now.addingTimeInterval(2 * 3600)
+            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-300), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+            // A reading from before the window started (reset - 5h) doesn't count.
+            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-1800), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+            // Usage going down (a reset in between) counts as none.
+            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-3600), 80)], lookback: 3600, minSpan: 900, now: now)?.atReset, 30)
+            equal(Forecast.pace(value: 100, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+        }
+
+        test("UsageHistory keeps one reading per ~10 minutes, for 30 days") {
+            var list: [UsageSample] = []
+            let t0 = Date()
+            UsageHistory.append(UsageSample(t: t0, h: 1, w: 1), to: &list)
+            UsageHistory.append(UsageSample(t: t0.addingTimeInterval(300), h: 2, w: 1), to: &list)
+            UsageHistory.append(UsageSample(t: t0.addingTimeInterval(600), h: 3, w: 1), to: &list)
+            equal(list.map(\.h), [1, 3])
+            var h: [String: [UsageSample]] = [
+                "Work": [UsageSample(t: t0.addingTimeInterval(-31 * 86400), h: 1, w: 1)] + list,
+                "Gone": list,
+            ]
+            UsageHistory.prune(&h, profiles: ["Work"])
+            equal(h["Work"]?.count, 2)
+            equal(h["Gone"] == nil, true)
+            let csv = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: nil)])
+            equal(csv, "time,five_hour,weekly\n1970-01-01T00:00:00Z,12.5,\n")
+        }
+
+        // MARK: best profile
+
+        test("bestProfile: most 5-hour room, weekly breaks ties, a full week loses") {
+            let s = ProfileStore(live: false)
+            s.profiles = ["A", "B", "C", "D"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
+            s.usage = ["A": Usage(fiveHour: 30, sevenDay: 50, error: nil),
+                       "B": Usage(fiveHour: 30, sevenDay: 10, error: nil),
+                       "C": Usage(fiveHour: 0, sevenDay: 100, error: nil),
+                       "D": Usage(fiveHour: nil, sevenDay: nil, error: "not signed in")]
+            equal(s.bestProfile()?.name, "B")
+            equal(s.roomiestProfile()?.name, "B")
+            s.usage = ["C": Usage(fiveHour: 0, sevenDay: 100, error: nil)]
+            equal(s.bestProfile()?.name, "C")
+            equal(s.roomiestProfile()?.name, nil)
+        }
+
+        print(failures == 0 ? "unit tests: \(checks) checks passed" : "unit tests: \(failures) of \(checks) failed")
+        exit(failures == 0 ? 0 : 1)
+    }
+}

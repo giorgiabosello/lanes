@@ -11,6 +11,14 @@ Each release is a "## <version> — <title>" heading, then its date as
 entry before running scripts/release.sh, which refuses a version without one.
 -->
 
+## 0.9.2 — Faster, sturdier usage readings
+_2026-11-26_
+
+- **All lanes at once**: usage is now checked for every profile in parallel, and a profile that hangs gives up after 30 seconds instead of holding up the others.
+- **One Keychain prompt**: Lanes asks the Keychain for Claude's cookie key once, not once per profile, and if you decline it doesn't ask again straight away.
+- **Numbers even offline**: when claude.ai can't be reached, a lane shows the last usage Claude Desktop recorded itself if that's newer than Lanes' own, marked *As of …* as before. Handy right after starting Lanes without a connection.
+- Under the hood: the app's code is split into smaller pieces and has its first unit tests, which already caught a cookie-decryption edge case.
+
 ## 0.9.1 — What's New, and updates that restart properly
 _2026-11-25_
 

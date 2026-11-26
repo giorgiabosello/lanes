@@ -223,7 +223,7 @@ struct UsagePair: View {
                               window: LimitWindow.week, tint: tint, forecast: u.sevenDayPace, compact: compact)
                 }
                 if let since = u.staleSince {
-                    StaleNote(since: since, error: u.staleError)
+                    StaleNote(since: since, error: u.staleError, fromClaudeDesktop: u.fromClaudeDesktop)
                 }
             }
         } else {
@@ -237,13 +237,19 @@ struct UsagePair: View {
 struct StaleNote: View {
     let since: Date
     let error: String?
+    var fromClaudeDesktop = false
 
     var body: some View {
         Label("As of \(clockText(since)): couldn't refresh", systemImage: "exclamationmark.arrow.circlepath")
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .help(error.map { "The last usage check failed (\($0)). Lanes keeps showing the previous numbers for up to an hour." } ?? "")
+            .help(error.map {
+                "The last usage check failed (\($0)). "
+                    + (fromClaudeDesktop
+                       ? "These numbers are the last ones Claude Desktop recorded itself, shown for up to an hour."
+                       : "Lanes keeps showing the previous numbers for up to an hour.")
+            } ?? "")
     }
 }
 

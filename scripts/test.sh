@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Release checks: builds the app (skip with --no-build), verifies the bundle,
+# Release checks: runs the unit tests (scripts/unit-tests.sh), builds the
+# app (skip with --no-build), verifies the bundle,
 # then installs the zip the way a download arrives (quarantined) into a
 # throwaway HOME and runs the app's first-launch setup there. The real
 # ~/Applications, profiles and watchdog are never touched; Claude.app is only
@@ -24,6 +25,7 @@ HELPER_REL="Contents/Resources/Lanes Helper.app/Contents/MacOS/Lanes Helper"
 version=$(zsh bin/lanes version)
 
 check "lanes parses" zsh -n bin/lanes
+check "unit tests pass" scripts/unit-tests.sh
 if [[ "${1:-}" != "--no-build" ]]; then
   scripts/build.sh >/dev/null 2>&1 || { print -- "FAIL build"; exit 1 }
 fi
