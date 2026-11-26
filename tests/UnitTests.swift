@@ -356,6 +356,73 @@ enum UnitTests {
             equal(s.roomiestProfile()?.name, nil)
         }
 
+        // MARK: notification buttons
+
+        test("alert categories: one set per profile, buttons in order") {
+            equal(AlertAction.category(.threshold, "Personal"), "threshold|Personal")
+            equal(AlertAction.category(.pace, nil), "pace|")
+            let cats = AlertAction.categories(for: ["Default", "Work"])
+            func actions(_ id: String) -> [String]? {
+                cats.first { $0.identifier == id }?.actions.map(\.title)
+            }
+            equal(cats.count, 2 * 3 + 2)
+            equal(actions("threshold|"), ["Mute Until Reset"])
+            equal(actions("threshold|Work"), ["Open Work", "Mute Until Reset"])
+            equal(actions("pace|Default"), ["Open Default", "Notify Me at Reset", "Mute Until Reset"])
+            equal(actions("reset|Work"), ["Open Work"])
+            equal(actions("reset|"), nil)
+        }
+
+        test("Mute Until Reset silences that limit until it resets") {
+            let s = ProfileStore(live: false)
+            s.alertMutedUntil = [:]
+            let reset = Date().addingTimeInterval(1800)
+            s.handleNotification(action: AlertAction.mute,
+                                 info: ["profile": "Work", "limit": "5h", "reset": reset.timeIntervalSince1970])
+            expect(s.isMuted("Work/5h"))
+            expect(!s.isMuted("Work/7d"))
+            expect(!s.isMuted("Work/5h", now: reset.addingTimeInterval(1)))
+            // No reset known (or already past): one whole window.
+            let now = Date()
+            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: LimitWindow.week, now: now)
+            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(LimitWindow.week).timeIntervalSince1970)
+            // Expired mutes are dropped.
+            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(LimitWindow.week + 1))
+            equal(s.alertMutedUntil["Work/7d"], nil)
+            s.alertMutedUntil = [:]
+        }
+
+        test("Notify Me at Reset asks for a reset alert below the first level") {
+            let s = ProfileStore(live: false)
+            s.remindAtReset = [:]
+            s.alertsEnabled = true
+            s.alertWarn = 80
+            let reset = Date().addingTimeInterval(3600)
+            expect(!s.wantsResetAlert("Work/5h", value: 40, reset: reset))
+            expect(s.wantsResetAlert("Work/5h", value: 85, reset: reset))
+            s.handleNotification(action: AlertAction.remind,
+                                 info: ["profile": "Work", "limit": "5h", "reset": reset.timeIntervalSince1970])
+            expect(s.wantsResetAlert("Work/5h", value: 40, reset: reset))
+            // Only for that window, and never for a reset that has passed.
+            expect(!s.wantsResetAlert("Work/5h", value: 40, reset: reset.addingTimeInterval(5 * 3600)))
+            expect(!s.wantsResetAlert("Work/5h", value: 90, reset: Date().addingTimeInterval(-1)))
+            s.alertsEnabled = false
+            expect(!s.wantsResetAlert("Work/5h", value: 90, reset: reset))
+            s.alertsEnabled = true
+            s.remindAtReset = [:]
+        }
+
+        test("alternative: the roomiest other profile, only with half its 5 hours left") {
+            let s = ProfileStore(live: false)
+            s.profiles = ["Work", "Personal"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
+            s.usage = ["Work": Usage(fiveHour: 90, sevenDay: 50, error: nil),
+                       "Personal": Usage(fiveHour: 20, sevenDay: 10, error: nil)]
+            equal(s.alternative(to: "Work")?.name, "Personal")
+            equal(s.alternative(to: "Personal"), nil)
+            s.usage["Personal"] = Usage(fiveHour: 60, sevenDay: 10, error: nil)
+            equal(s.alternative(to: "Work"), nil)
+        }
+
         print(failures == 0 ? "unit tests: \(checks) checks passed" : "unit tests: \(failures) of \(checks) failed")
         exit(failures == 0 ? 0 : 1)
     }

@@ -86,7 +86,16 @@ struct SettingsView: View {
         Section {
             Toggle(isOn: $store.alertsEnabled) {
                 described("Usage alerts",
-                          "When a 5-hour or weekly limit passes a level below, and when a limit you were close to resets.")
+                          "When a 5-hour or weekly limit passes a level below, and when a limit you were close to resets. Their buttons open the profile with the most room, or mute a limit until it resets.")
+            }
+        } footer: {
+            HStack {
+                Spacer()
+                Button("Send Test Alert") { store.sendTestAlert() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .tint(Brand.coral)
+                    .disabled(!store.alertsEnabled)
             }
         }
         Section {

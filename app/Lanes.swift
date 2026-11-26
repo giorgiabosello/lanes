@@ -56,7 +56,7 @@ final class ProfileStore: ObservableObject {
     @Published var alertsEnabled = UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(alertsEnabled, forKey: "alertsEnabled")
-            if alertsEnabled { Notifier.shared.setUp() }
+            if alertsEnabled && live { Notifier.shared.setUp() }
         }
     }
     // The two alert levels, in percent of a limit. The second is kept above the first.
@@ -135,6 +135,14 @@ final class ProfileStore: ObservableObject {
     var paceAlerted: [String: Double] = UserDefaults.standard.dictionary(forKey: "paceAlerted") as? [String: Double] ?? [:] {
         didSet { UserDefaults.standard.set(paceAlerted, forKey: "paceAlerted") }
     }
+    // Set from notification buttons, per "Work/5h": warnings muted until
+    // (epoch), and a reset notification asked for the window ending at (epoch).
+    var alertMutedUntil: [String: Double] = UserDefaults.standard.dictionary(forKey: "alertMutedUntil") as? [String: Double] ?? [:] {
+        didSet { UserDefaults.standard.set(alertMutedUntil, forKey: "alertMutedUntil") }
+    }
+    var remindAtReset: [String: Double] = UserDefaults.standard.dictionary(forKey: "remindAtReset") as? [String: Double] ?? [:] {
+        didSet { UserDefaults.standard.set(remindAtReset, forKey: "remindAtReset") }
+    }
 
     // Owned by the store (not a view) so the menu bar stays live with the window closed.
     private var timers: [Timer] = []
@@ -153,6 +161,7 @@ final class ProfileStore: ObservableObject {
         }]
         scheduleUsageTimer()
         Notifier.shared.attach()
+        registerAlertCategories()
         if alertsEnabled { Notifier.shared.setUp() }
         GlobalShortcut.setEnabled(.panel, shortcutEnabled)
         GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
@@ -210,7 +219,10 @@ final class ProfileStore: ObservableObject {
         }
         // Only publish on actual change: every @Published assignment re-renders
         // the cards, which dismisses any open Menu mid-interaction.
-        if list != profiles { profiles = list }
+        if list != profiles {
+            profiles = list
+            registerAlertCategories()
+        }
         refreshRunning()
     }
 

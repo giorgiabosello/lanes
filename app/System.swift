@@ -80,32 +80,58 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
     static let whatsNewID = "whats-new"
 
-    func post(title: String, body: String, identifier: String = UUID().uuidString) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+    func post(title: String, body: String, identifier: String = UUID().uuidString,
+              category: String? = nil, info: [String: Any] = [:]) {
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+            UNNotificationRequest(identifier: identifier,
+                                  content: content(title, body, category: category, info: info), trigger: nil))
     }
-    // Clicking "Lanes updated to …" opens What's New.
+
+    // Clicking "Lanes updated to …" opens What's New; any other Lanes
+    // notification hands its click or action button to the store.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
-        if response.notification.request.identifier == Self.whatsNewID {
-            DispatchQueue.main.async { WhatsNewWindow.show() }
+        let id = response.notification.request.identifier
+        let action = response.actionIdentifier
+        let info = response.notification.request.content.userInfo
+        DispatchQueue.main.async {
+            if id == Self.whatsNewID {
+                WhatsNewWindow.show()
+            } else {
+                ProfileStore.shared.handleNotification(action: action, info: info)
+            }
         }
         done()
     }
+
     // Fires at `date` even if the app has quit by then; posting again with the
     // same identifier replaces the pending one.
-    func schedule(_ identifier: String, at date: Date, title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+    func schedule(_ identifier: String, at date: Date, title: String, body: String,
+                  category: String? = nil, info: [String: Any] = [:]) {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, date.timeIntervalSinceNow), repeats: false)
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: identifier,
+                                  content: content(title, body, category: category, info: info), trigger: trigger))
     }
+
+    private func content(_ title: String, _ body: String, category: String?, info: [String: Any]) -> UNNotificationContent {
+        let c = UNMutableNotificationContent()
+        c.title = title
+        c.body = body
+        c.sound = .default
+        if let category { c.categoryIdentifier = category }
+        c.userInfo = info
+        return c
+    }
+
+    // The action buttons notifications can carry. Their titles name a
+    // profile, so there's a set per profile, replaced whenever the profiles
+    // change: registered ahead, so a notification never arrives before its
+    // buttons do.
+    func registerCategories(_ categories: Set<UNNotificationCategory>) {
+        UNUserNotificationCenter.current().setNotificationCategories(categories)
+    }
+
     func cancel(_ identifiers: [String]) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
     }
