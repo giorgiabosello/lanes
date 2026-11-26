@@ -411,6 +411,8 @@ struct LanesApp: App {
         Window("Lanes Settings", id: "settings") {
             SettingsView(store: store)
         }
+        // The tabs sit in the title bar's row, beside the window buttons.
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
         MenuBarExtra {
