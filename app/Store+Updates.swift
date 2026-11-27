@@ -79,6 +79,11 @@ extension ProfileStore {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [lanes, "update", "--relaunch"]
+        // The version seen here, not whatever the script would look up: the
+        // next launch compares itself against it (see updateAttempt).
+        if let target {
+            p.environment = ProcessInfo.processInfo.environment.merging(["LANES_LATEST": target]) { $1 }
+        }
         p.standardInput = FileHandle.nullDevice
         let log = FileHandle(forWritingAtPath: logPath)
         p.standardOutput = log ?? FileHandle.nullDevice
