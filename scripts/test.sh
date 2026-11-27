@@ -26,6 +26,43 @@ version=$(zsh bin/lanes version)
 
 check "lanes parses" zsh -n bin/lanes
 check "unit tests pass" scripts/unit-tests.sh
+
+# ---- `lanes claude` and the status line, with a stand-in claude -------------
+
+cli_home=${$(mktemp -d):A}
+mkdir -p "$cli_home/Library/Application Support/Lanes/profiles/Work" "$cli_home/bin"
+print -r -- '#!/bin/sh
+echo "${CLAUDE_CONFIG_DIR-unset} $*"' > "$cli_home/bin/claude"
+chmod +x "$cli_home/bin/claude"
+printf '# updated %s\nDefault\torange\t0\t92\t\t10\t\t\t\t\t\t\nWork\tblue\t0\t20\t\t30\t\t\t\t\t\t\n' \
+  "$(date +%s)" > "$cli_home/Library/Application Support/Lanes/usage.tsv"
+lanes_cli() { HOME="$cli_home" PATH="$cli_home/bin:/usr/bin:/bin" NO_COLOR=1 zsh bin/lanes "$@" 2>/dev/null }
+cli_says() { [[ "$(lanes_cli "${@:2}")" == "$1" ]] }
+work_cfg="$cli_home/Library/Application Support/Lanes/profiles/Work/claude-config"
+check "claude: runs on the profile's config" cli_says "$work_cfg -p hi" claude work -- -p hi
+check "claude: passes args without --" cli_says "$work_cfg --version" claude work --version
+check "claude: default clears CLAUDE_CONFIG_DIR" sh -c 'CLAUDE_CONFIG_DIR=/x HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude default 2>/dev/null | grep -qx "unset "' _ "$cli_home"
+check "claude: --best picks the roomiest" cli_says "$work_cfg " claude --best
+check "claude: unknown profile fails" sh -c '! HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude ghost' _ "$cli_home"
+check "statusline: profile from CLAUDE_CONFIG_DIR" sh -c '[ "$(CLAUDE_CONFIG_DIR="$2" HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline)" = "Work · 5h 20% · week 30%" ]' _ "$cli_home" "$work_cfg"
+check "statusline: Default without it" cli_says "Default · 5h 92% · week 10%" usage --statusline
+check "statusline: red at 90%" sh -c 'HOME="$1" zsh bin/lanes usage --statusline default | grep -q "$(printf "\033\\[31m92%%")"' _ "$cli_home"
+
+# `lanes statusline` edits settings.json: adds, keeps the rest, leaves others alone.
+mkdir -p "$cli_home/Library/Application Support/Lanes/profiles/Own/claude-config" "$work_cfg"
+print -r -- '{"model":"opus"}' > "$work_cfg/settings.json"
+print -r -- '{"statusLine":{"type":"command","command":"mine.sh"}}' > "$cli_home/Library/Application Support/Lanes/profiles/Own/claude-config/settings.json"
+sl_state() { lanes_cli statusline --tsv | awk -F'\t' -v p="$1" '$1 == p { print $2 }' }
+check "statusline: starts off" test "$(sl_state Work)" = off
+check "statusline on: succeeds" lanes_cli statusline on
+check "statusline on: adds it" test "$(sl_state Work)" = on
+check "statusline on: keeps other settings" grep -q '"model": "opus"' "$work_cfg/settings.json"
+check "statusline on: keeps a backup" grep -q '"model":"opus"' "$work_cfg/settings.json.lanes-backup"
+check "statusline on: leaves a custom one alone" test "$(sl_state Own)" = other
+check "statusline off: removes it" sh -c 'HOME="$1" zsh bin/lanes statusline off work >/dev/null && ! grep -q statusLine "$2/settings.json"' _ "$cli_home" "$work_cfg"
+check "whats-new: prints this version" sh -c 'zsh bin/lanes whats-new | head -1 | grep -qF "Lanes $1:"' _ "$version"
+check "whats-new: hides try comments" sh -c '! zsh bin/lanes whats-new | grep -q "<!--"'
+rm -rf "$cli_home"
 if [[ "${1:-}" != "--no-build" ]]; then
   scripts/build.sh >/dev/null 2>&1 || { print -- "FAIL build"; exit 1 }
 fi

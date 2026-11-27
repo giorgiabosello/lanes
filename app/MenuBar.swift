@@ -7,6 +7,7 @@ import AppKit
 
 struct MenuBarLabel: View {
     @ObservedObject var store: ProfileStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let values = store.profiles.map { p -> Double? in
@@ -14,6 +15,8 @@ struct MenuBarLabel: View {
             return u.fiveHour
         }
         Image(nsImage: MenuBarGlyph.image(levels: values, percent: values.compactMap { $0 }.max()))
+            // Always on screen, so it opens Settings for AppKit windows.
+            .onChange(of: store.settingsRequest) { _ in openWindow(id: "settings") }
     }
 }
 

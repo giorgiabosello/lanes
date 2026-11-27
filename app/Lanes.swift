@@ -115,6 +115,9 @@ final class ProfileStore: ObservableObject {
     // Set on the first launch of a newer version than the last one run (an
     // update), until What's New is opened or dismissed: the panel's strip.
     @Published var updatedTo: String?
+    @Published var statusLine: [StatusLineState] = []     // Claude Code's, per profile
+    @Published var isUpdatingStatusLine = false
+    @Published var settingsRequest = 0                       // see openSettings(_:)
 
     // Lanes' own updates (not Claude's): the newer release on GitHub, if any.
     @Published var availableUpdate: String?

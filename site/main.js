@@ -234,12 +234,50 @@ for (const name of Object.keys(COLORS)) {
 nameIn.addEventListener("input", () => paint(false));
 paint(false);
 
+// ---------- lanes claude, in a terminal ----------
+// What `lanes claude <lane>` prints, and the status line `lanes usage
+// --statusline` draws for that lane. Same numbers as the widget tile.
+const TERM_LANES = [
+  { arg: "work", name: "Work", color: "blue", h5: 86, reset: "38m", wk: 63, out: "09:30" },
+  { arg: "studio", name: "Studio", color: "green", h5: 7, reset: "4h 40m", wk: 12 },
+  { arg: "default", name: "Default", color: "orange", h5: 23, reset: "3h 11m", wk: 71 },
+  { arg: "--best", best: "studio" },
+];
+const lanePick = $("#lanePick");
+const shell = $("#shell");
+const termLevel = (v) => (v >= 90 ? "crit" : v >= 75 ? "warn" : "");
+const pctSpan = (v) => (termLevel(v) ? `<span class="${termLevel(v)}">${v}%</span>` : `${v}%`);
+function pickLane(arg) {
+  const pick = TERM_LANES.find((l) => l.arg === arg);
+  const l = pick.best ? TERM_LANES.find((x) => x.arg === pick.best) : pick;
+  shell.style.setProperty("--ci", COLORS[l.color]);
+  shell.setAttribute("aria-label", `A terminal running Claude Code on the ${l.name} lane`);
+  $("#tArg").textContent = pick.arg;
+  $("#tInfo").textContent = `ℹ Claude Code on ${l.name}${l.name === "Default" ? " (~/.claude)" : ""}`;
+  $("#tStatus").innerHTML = `<b>${l.name}</b> · 5h ${pctSpan(l.h5)} <span class="d">resets in ${l.reset}</span>` +
+    ` · week ${pctSpan(l.wk)}` + (l.out ? ` · <span class="warn">out ~${l.out}</span>` : "");
+  for (const b of lanePick.children) b.setAttribute("aria-checked", b.dataset.arg === arg);
+}
+for (const l of TERM_LANES) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "lp";
+  b.dataset.arg = l.arg;
+  b.setAttribute("role", "radio");
+  const c = COLORS[(l.best ? TERM_LANES.find((x) => x.arg === l.best) : l).color];
+  b.style.setProperty("--ci", l.best ? "var(--coral)" : c);
+  b.innerHTML = `<i></i>${l.arg}`;
+  b.addEventListener("click", () => pickLane(l.arg));
+  lanePick.append(b);
+}
+pickLane("work");
+
 // ---------- reveal on scroll ----------
 if ("IntersectionObserver" in window) {
   const io = new IntersectionObserver((entries) => {
     for (const e of entries) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
   }, { threshold: 0.2 });
-  document.querySelectorAll(".band h2, .band .sub, .maker, .preview, .tile, .extras li, .steps li").forEach((el) => {
+  document.querySelectorAll(".band h2, .band .sub, .maker, .preview, .shell, .cmds, .tile, .extras li, .steps li").forEach((el) => {
     el.classList.add("reveal");
     io.observe(el);
   });

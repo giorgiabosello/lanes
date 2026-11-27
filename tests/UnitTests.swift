@@ -458,6 +458,56 @@ enum UnitTests {
             expect(s.healthNeedsAttention)
         }
 
+        test("Try-it actions parse, skipping unknown ones") {
+            equal(TryAction.parse(" copy lanes claude --best | statusline | test-alert | settings status | settings nope | teleport "),
+                  [.copy("lanes claude --best"), .statusLine, .testAlert, .settings(.status)])
+            equal(TryAction.parse("copy"), [])
+        }
+
+        test("Changelog: try comments attach to their release, and stay out of the text") {
+            let md = """
+            <!-- format notes, before any release -->
+            ## 0.10.0 — New things
+            _2026-11-27_
+            <!-- try: copy lanes claude work | statusline -->
+
+            - **One** thing.
+
+            ## 0.9.0 — Old things
+            _2026-11-25_
+
+            - Another.
+            """
+            let e = Changelog.parse(md)
+            equal(e.map(\.version), ["0.10.0", "0.9.0"])
+            equal(e[0].actions, [.copy("lanes claude work"), .statusLine])
+            equal(e[1].actions, [])
+            equal(e[0].blocks.count, 1)
+            expect(e[0].date != nil)
+        }
+
+        test("CHANGELOG.md: every release parses, and try actions are all known") {
+            let text = try String(contentsOfFile: "CHANGELOG.md", encoding: .utf8)
+            let e = Changelog.parse(text)
+            expect(!e.isEmpty)
+            expect(e.allSatisfy { $0.date != nil && !$0.blocks.isEmpty }, "a release without a date or notes")
+            let declared = text.components(separatedBy: "\n").filter { $0.hasPrefix("<!-- try:") }
+                .map { $0.components(separatedBy: "|").count }.reduce(0, +)
+            equal(e.map(\.actions.count).reduce(0, +), declared)
+        }
+
+        test("StatusLineState parses lanes statusline --tsv") {
+            let tsv = "Default\ton\t/a/settings.json\nWork\tadded\t/b\nAcme\tother\t/c\nOld\tremoved\t/d\nBad\tinvalid\t/e\nshort\n"
+            let s = StatusLineState.parse(tsv: tsv)
+            equal(s.map(\.profile), ["Default", "Work", "Acme", "Old", "Bad"])
+            equal(s.map(\.state), [.on, .on, .other, .off, .invalid])
+            let store = ProfileStore(live: false)
+            store.statusLine = s
+            equal(store.statusLineOn.count, 2)
+            equal(ProfileStore.joined(["A", "B", "C"]), "A, B and C")
+            equal(store.statusLineSummary, "On for 2 of 5 profiles. Acme has its own. Can't read the settings of Bad.")
+        }
+
         print(failures == 0 ? "unit tests: \(checks) checks passed" : "unit tests: \(failures) of \(checks) failed")
         exit(failures == 0 ? 0 : 1)
     }

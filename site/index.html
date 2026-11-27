@@ -4,20 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lanes — every Claude account in its own lane</title>
-<meta name="description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left. Menu bar usage tracker, desktop widget, free and open source.">
+<meta name="description" content="Run several Claude accounts side by side on your Mac, in Claude Desktop and Claude Code, and always know which one has room left. Menu bar usage tracker, desktop widget, free and open source.">
 <meta name="theme-color" content="#1B1320">
 <link rel="icon" href="images/logo.svg" type="image/svg+xml">
 
 <meta property="og:type" content="website">
 <meta property="og:title" content="Lanes — every Claude account in its own lane">
-<meta property="og:description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left.">
+<meta property="og:description" content="Run several Claude accounts side by side on your Mac, in Claude Desktop and Claude Code, and always know which one has room left.">
 <meta property="og:image" content="https://lanes.pego.tech/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:url" content="https://lanes.pego.tech/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Lanes — every Claude account in its own lane">
-<meta name="twitter:description" content="Run several Claude Desktop accounts side by side on your Mac, and always know which one has room left.">
+<meta name="twitter:description" content="Run several Claude accounts side by side on your Mac, in Claude Desktop and Claude Code, and always know which one has room left.">
 <meta name="twitter:image" content="https://lanes.pego.tech/og.png">
 
 <link rel="preload" href="fonts/Inter.woff2" as="font" type="font/woff2" crossorigin>
@@ -39,6 +39,7 @@
   <nav>
     <a href="#story">Tour</a>
     <a href="#new">New lane</a>
+    <a href="#terminal">Terminal</a>
     <a href="#install">Install</a>
     <a href="changelog.html">Changelog</a>
     <a class="nav-gh" href="https://github.com/pego/lanes">GitHub</a>
@@ -54,7 +55,7 @@
       <path class="hl hl-azure" d="M450 -60V420A130 130 0 0 0 580 550H1700"/>
     </svg>
     <div class="wrap hero-copy">
-      <p class="eyebrow"><span class="pip"></span>For Claude Desktop on macOS</p>
+      <p class="eyebrow"><span class="pip"></span>For Claude Desktop &amp; Claude Code</p>
       <h1>Every Claude account <br class="br-wide">in its own <em>lane<span class="dot">.</span></em></h1>
       <p class="lede">Work, personal, one per client. Run them all side by side, each with its own login and chats, and always know which one has room left.</p>
       <div class="install-cmd">
@@ -221,27 +222,56 @@
           <h3>A desktop widget</h3>
           <p>Three sizes with live reset countdowns. Click a profile to open it.</p>
         </article>
-        <article class="tile t-cli">
+        <article class="tile t-alert">
           <div class="tile-art">
-            <pre class="term"><span class="p">$</span> lanes launch --best
-<span class="p">$</span> lanes usage --json | jq '.profiles[0].fiveHour'
-<span class="o">86</span>
-<span class="p">$</span> lanes add "client acme" --color pink<span class="caret"></span></pre>
+            <div class="alert-demo">
+              <div class="ad-main">
+                <img src="images/logo.svg" alt="" width="34" height="34">
+                <div><b>Work is at 80%</b><span>of its 5-hour limit. Studio has the most room.</span></div>
+              </div>
+              <div class="ad-btns"><span>Open Studio</span><span>Mute Until Reset</span></div>
+            </div>
           </div>
-          <h3>A command line, too</h3>
-          <p><code>lanes</code> drives everything the app does, so your scripts and status lines can as well.</p>
+          <h3>Alerts you can act on</h3>
+          <p>At the levels you pick, or earlier when a limit is on pace to run out. Jump to the lane with the most room, or mute this one until it resets, right from the notification.</p>
         </article>
         <article class="tile t-privacy">
           <h3>No account. No telemetry.</h3>
           <p>Usage is read with each profile’s own session, straight from claude.ai. Nothing else leaves your Mac.</p>
-          <p class="big-num"><span class="num-tab">~4,000</span><small>lines of Swift and shell you can read in an afternoon.</small></p>
+          <p class="big-num"><span class="num-tab">~6,000</span><small>lines of Swift and shell you can read in an afternoon.</small></p>
         </article>
       </div>
       <ul class="extras">
-        <li><b>Isolated Claude Code.</b> The Code and Cowork tabs get their own config per lane.</li>
+        <li><b>A health check.</b> Settings → Status spots what’s off and fixes it in one click.</li>
         <li><b>Hands-off updates.</b> A watchdog puts each lane back on its account after Claude updates.</li>
         <li><b>Sign-in that lands right.</b> Claude’s login link goes to the lane you clicked it in.</li>
       </ul>
+    </div>
+  </section>
+
+  <!-- In the terminal, interactive -->
+  <section class="band" id="terminal">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">In the terminal</p>
+        <h2>Every lane in your terminal.</h2>
+        <p class="sub">Each lane’s Code tab already runs Claude Code on its own account. <code>lanes claude</code> brings that account to your terminal, with the same sign-in, settings and history. Your plain <code>claude</code> stays on Default.</p>
+        <div class="lane-pick" id="lanePick" role="radiogroup" aria-label="Lane"></div>
+        <ul class="cmds">
+          <li><code>lanes statusline on</code><span>Each lane’s usage in Claude Code’s status line, as in the window here.</span></li>
+          <li><code>lanes usage --json</code><span>Every lane’s numbers, for scripts, prompts and tmux.</span></li>
+          <li><code>lanes doctor --fix</code><span>Checks the setup and repairs what it can.</span></li>
+        </ul>
+        <p class="fine"><a href="https://github.com/pego/lanes/blob/main/docs/cli.md">Every command in the guide →</a></p>
+      </div>
+      <div class="shell" id="shell" aria-label="A terminal running Claude Code on the Work lane">
+        <div class="shell-bar"><i></i><i></i><i></i><span>~/code/app — zsh</span></div>
+        <pre class="term"><span class="p">$</span> lanes claude <b id="tArg">work</b>
+<span class="d" id="tInfo">ℹ Claude Code on Work</span>
+
+<span class="o">&gt;</span> add a --json flag to the export command<span class="caret"></span></pre>
+        <div class="shell-status" id="tStatus"><b>Work</b> · 5h <span class="warn">86%</span> <span class="d">resets in 38m</span> · week 63% · <span class="warn">out ~09:30</span></div>
+      </div>
     </div>
   </section>
 

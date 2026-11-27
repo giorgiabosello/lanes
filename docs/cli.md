@@ -25,6 +25,7 @@ sudo ln -sf /Applications/Lanes.app/Contents/Resources/lanes /usr/local/bin/lane
 lanes add work --color blue     # a new profile, with its Spotlight launcher
 lanes launch work               # launch it, or bring it forward if it's running
 lanes launch --best             # the profile with the most 5-hour room
+lanes claude work               # Claude Code in this terminal, on Work's account
 lanes usage                     # 5-hour and weekly usage, with reset times
 lanes history work --days 7     # a week of usage readings, as CSV
 lanes list                      # every profile, and whether its launcher is healthy
@@ -43,8 +44,11 @@ its launcher is **Claude Client Acme**. The colors are `orange`, `red`,
 | `lanes add <name> [--color <c>]` | Creates a profile and its Spotlight launcher, and installs the watchdog. Running it again on an existing profile rebuilds the launcher and keeps the color unless you pass a new one. |
 | `lanes launch <name>` | Launches the profile from its own clone of Claude.app, or focuses it if it's already running. |
 | `lanes launch --best` | Launches the profile with the most 5-hour headroom. A profile whose weekly limit is used up is skipped, unless they all are. |
+| `lanes usage --statusline [<name>]` | One line of usage for Claude Code's status line. See [below](#claude-code-in-the-terminal). |
 | `lanes usage [--json]` | The latest usage per profile, as last loaded by the menu bar app. `●` marks running profiles. Per-model weekly limits (such as Opus) are listed under their profile, followed by a warning for any limit on pace to run out before it resets. |
 | `lanes history [<name>] [--days N] [--json]` | The usage readings behind the drawer's chart, one every ten minutes, for up to 30 days: every profile, or just one. CSV by default (`profile,time,five_hour,weekly`, times in UTC), JSON with `--json`. |
+| `lanes claude <name> [--] [<args>]` | Runs Claude Code (`claude`) in this terminal on the profile's own config dir, the same one its Code and Cowork tabs use, so it shares their sign-in, settings and history. `--best` picks the profile with the most 5-hour room, and `default` runs it on your usual `~/.claude`. Every other argument goes to `claude`. Put a `--` before them if one would clash with Lanes' own arguments: `lanes claude work -- -p "…"`. |
+| `lanes statusline [status \| on \| off] [<name>…]` | Shows, adds or removes Lanes' status line in Claude Code's settings, for every profile or the ones you name. See [The status line](#the-status-line). |
 | `lanes list` | Profiles, their data folders, and whether each launcher is in place. |
 | `lanes color <name> <color>` | Changes a profile's color. A running profile picks it up on its next launch. |
 | `lanes remove <name> [--keep-data \| --delete-data]` | Removes the launcher, and optionally the data folder. Without a flag, it asks. |
@@ -55,6 +59,7 @@ its launcher is **Claude Client Acme**. The colors are `orange`, `red`,
 | `lanes setup [--if-needed]` | Points the launchers, the watchdog and the helper at this copy of `lanes`. The app runs it the first time a new version opens. |
 | `lanes gui` | Builds the app from a repo checkout and installs it into `~/Applications`. Needs the Xcode Command Line Tools. |
 | `lanes chooser [--force]` | Builds a dialog-based AppleScript picker instead, with no build tools needed. It won't replace the full app without `--force`. |
+| `lanes whats-new [<version>]` | The release notes for this version, or the one you name. After an update, the first `lanes` command you run in a terminal mentions what's new, once. |
 | `lanes version` | Prints the version. |
 | `lanes help` | Prints a short summary of all of the above. |
 
@@ -125,7 +130,62 @@ name  color  running(1/0)  5h%  5h-reset-epoch  week%  week-reset-epoch  error
 a comma-separated list of `Label=percent@reset-epoch`, such as
 `Opus=48@1764219600`. New columns are only ever added at the end.
 
-### Example: a status line
+## Claude Code in the terminal
+
+`lanes claude <name>` runs the terminal `claude` on the config dir of the
+profile you name, which is
+`~/Library/Application Support/Lanes/profiles/<Name>/claude-config`. The
+profile's Code and Cowork tabs use the same dir. If you already signed in
+there, the terminal is signed in too. If not, `/login` once in either
+place. Your plain `claude` keeps using `~/.claude`, the Default lane.
+
+```sh
+lanes claude work                   # interactive session on Work
+lanes claude --best                 # on whichever profile has the most room
+lanes claude work -- -p "summarize CHANGELOG.md" > summary.txt
+alias cw='lanes claude work'        # a shortcut per account
+```
+
+Lanes prints which profile it picked on stderr, so piped output stays clean.
+
+### The status line
+
+`lanes usage --statusline` prints the usage of the profile a session runs
+on. It takes the profile from `CLAUDE_CONFIG_DIR`, so the same setting works
+in every lane:
+
+```
+Work · 5h 86% resets in 1h 10m · week 41% · out ~15:40
+```
+
+Percentages turn orange at 75% and red at 90%. *out ~15:40* means the
+limit runs out before it resets, at the current pace. *(stale)* means the
+numbers are old. Set `NO_COLOR` to drop the colors, and pass a name to show
+a different profile. Like `lanes usage`, it reads the snapshot saved by the
+app, so it never calls the network.
+
+Turn it on for every profile with **Settings → General → Turn On**, or:
+
+```sh
+lanes statusline on          # every profile, and Default if you use the terminal claude
+lanes statusline on work     # just one
+lanes statusline             # where it's on
+lanes statusline off         # take it out again
+```
+
+This adds a `statusLine` setting to the `settings.json` in each profile's
+`claude-config` (and in `~/.claude` for Default) and leaves the rest of the
+file as it was. The first change to a file keeps a copy beside it, as
+`settings.json.lanes-backup`. A profile that already has a status line of
+its own is left alone. To set one up by hand instead:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "lanes usage --statusline" }
+}
+```
+
+### Example: every profile on one line
 
 The usage of every signed-in profile on one line, for a prompt, tmux or a
 Claude Code status line:

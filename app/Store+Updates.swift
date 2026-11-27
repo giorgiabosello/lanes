@@ -4,6 +4,8 @@
 import AppKit
 
 extension ProfileStore {
+    static let whatsNewSinceKey = "whatsNewSince"
+
     var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
@@ -19,6 +21,8 @@ extension ProfileStore {
             ?? (FileManager.default.fileExists(atPath: UsageHistory.path) ? "0.0.0" : nil)
         d.set(appVersion, forKey: key)
         guard let last, versionLessThan(last, appVersion), let entry = Changelog.entry(appVersion) else { return }
+        // What's New marks every release after this one as new.
+        if last != "0.0.0" { d.set(last, forKey: Self.whatsNewSinceKey) }
         updatedTo = appVersion
         Notifier.shared.setUp()
         Notifier.shared.post(title: "Lanes updated to \(appVersion)",

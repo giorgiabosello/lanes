@@ -53,6 +53,7 @@ struct SettingsView: View {
         .onAppear {
             if let initialTab { tab = initialTab }
             store.checkHealth()
+            store.checkStatusLine()
         }
     }
 
@@ -78,6 +79,23 @@ struct SettingsView: View {
                     Text("\(Int(s / 60)) min").tag(s)
                 }
             }
+        }
+        Section {
+            LabeledContent {
+                if store.isUpdatingStatusLine {
+                    ProgressView().controlSize(.small)
+                } else if !store.statusLineOff.isEmpty {
+                    Button("Turn On") { store.confirmStatusLine(on: true) }
+                } else if !store.statusLineOn.isEmpty {
+                    Button("Turn Off") { store.confirmStatusLine(on: false) }
+                }
+            } label: {
+                described("Usage in Claude Code's status line", store.statusLineSummary)
+            }
+        } header: {
+            Text("Claude Code")
+        } footer: {
+            note("In the Terminal, lanes claude <name> runs Claude Code on a profile's account.")
         }
         Section {
             Toggle(isOn: $store.routeLinks) {
