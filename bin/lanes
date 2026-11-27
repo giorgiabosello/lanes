@@ -611,17 +611,31 @@ sync_install() {
 
 # ---- commands ---------------------------------------------------------------
 
+# The command that (re)creates a profile's launcher, for hints. A "Default"
+# profile made before lanes add refused that name can't be re-added as is: it
+# has to be renamed first, and lanes add then picks up its data folder.
+add_hint() {
+  local raw="$1" display="$2"
+  if [[ "$display" == "Default" ]]; then
+    print -r -- "mv \"$PROFILES_DIR/Default\" \"$PROFILES_DIR/<New Name>\" && lanes add \"<new name>\""
+  else
+    print -r -- "lanes add -- ${(q-)raw}"
+  fi
+}
+
 cmd_add() {
-  local usage="Usage: lanes add <name> [--color <color>]   (e.g. lanes add personal --color blue)"
+  local usage="Usage: lanes add [--color <color>] [--] <name>   (e.g. lanes add personal --color blue)"
   local color=""
   # The name may come as several words (lanes add client acme): join them,
-  # rather than silently keeping the first one.
+  # rather than silently keeping the first one. Everything after `--` is name,
+  # so the app and the chooser can pass a typed name like "-work" as is.
   local -a words=()
   while (( $# )); do
     case "$1" in
+      --)      shift; words+=("$@"); break ;;
       --color) [[ -n "${2:-}" ]] || err "--color needs a value. Available: ${(k)HUES}"
                color="$2"; shift 2 ;;
-      -*)      err "Unknown option '$1'. $usage" ;;
+      -*)      err "Unknown option '$1'. $usage   (a name starting with '-' goes after --)" ;;
       *)       words+=("$1"); shift ;;
     esac
   done
@@ -736,7 +750,7 @@ on addProfile()
 	set rawName to text returned of dlg
 	if rawName is "" then return
 	try
-		do shell script lanesCommand() & " add " & quoted form of rawName
+		do shell script lanesCommand() & " add -- " & quoted form of rawName
 	on error msg
 		display alert "Could not create profile" message msg as critical
 		return
@@ -786,7 +800,10 @@ launch_profile() {
   local display data_dir color clone claude_app pid tool
   display=$(displayify "$(slugify "$raw")")
   data_dir="$PROFILES_DIR/$display"
-  [[ -d "$data_dir" ]] || err "Profile '$display' not found. Create it with: lanes add $raw"
+  [[ -d "$data_dir" ]] || {
+    [[ "$display" != "Default" ]] || err "\"Default\" is your main Claude, not a profile. Open Claude itself."
+    err "Profile '$display' not found. Create it with: $(add_hint "$raw" "$display")"
+  }
   color=$(color_of_profile "$data_dir")
   claude_app=$(find_claude_app)
   clone="$CLONES_DIR/Claude $display.app"
@@ -816,7 +833,11 @@ cmd_launch() {
   # keep serving the default account under a profile's name.
   local raw="${1:-}"
   [[ -n "$raw" ]] || err "Usage: lanes launch <name> | lanes launch --best"
-  (( $# <= 1 )) || err "Too many arguments. Quote a name with spaces: lanes launch \"${(j: :)@}\""
+  if (( $# > 1 )); then
+    # Suggest quoting only when every argument looks like part of a name.
+    [[ -z "${(M)@:#-*}" ]] || err "Usage: lanes launch <name> | lanes launch --best"
+    err "Too many arguments. Quote a name with spaces: lanes launch \"${(j: :)@}\""
+  fi
   if [[ "$raw" == "--best" ]]; then
     raw=$(best_profile) ||
       err "No usage data to choose from. Open the Lanes app (menu bar) so it can load usage."
@@ -1080,7 +1101,10 @@ cmd_watchdog() {
 }
 
 cmd_color() {
-  local raw="${1:-}" color="${2:-}"
+  # The color is the last word and the name is everything before it, so
+  # lanes color client acme blue works like lanes color "client acme" blue.
+  local raw="" color=""
+  (( $# >= 2 )) && { raw="${(j: :)@[1,-2]}"; color="${@[-1]}" }
   [[ -n "$raw" && -n "$color" ]] || err "Usage: lanes color <name> <color>   Available: ${(k)HUES}"
   [[ -n "${HUES[$color]+x}" ]] || err "Unknown color '$color'. Available: ${(k)HUES}"
   local display data_dir app_path claude_app
@@ -1099,7 +1123,7 @@ cmd_color() {
     /usr/bin/touch "$app_path"
     ok "Launcher icon updated. (Finder/Dock may take a moment to refresh.)"
   else
-    info "No launcher found; run 'lanes add $raw' to create one with this color."
+    info "No launcher found; create one with this color: $(add_hint "$raw" "$display")"
   fi
 
   local clone="$CLONES_DIR/Claude $display.app"
@@ -1401,7 +1425,7 @@ cmd_remove() {
           rm -rf "$data_dir"
           ok "Deleted $data_dir"
         else
-          info "Data folder kept. Re-create the launcher later with: lanes add $raw"
+          info "Data folder kept. Re-create the launcher later with: $(add_hint "$raw" "$display")"
         fi
         ;;
     esac
@@ -1415,7 +1439,8 @@ lanes — every Claude account in its own lane
 
 PROFILES
   lanes add <name> [--color <c>]   Create a profile and its Spotlight launcher
-                                   (lanes add "client acme" makes "Client Acme")
+                                   (lanes add client acme makes "Client Acme";
+                                   lanes add -- -work for a name starting with -)
   lanes launch <name>              Launch it, or bring it forward if running
   lanes launch --best              Launch the profile with the most 5-hour room
   lanes list                       Profiles and launcher health
