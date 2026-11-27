@@ -1347,6 +1347,155 @@ cmd_update() {
   return 0
 }
 
+# ---- doctor -----------------------------------------------------------------
+
+# Checks what Lanes depends on and says how to fix what's off. Read-only
+# unless --fix, which repairs what can be repaired from here (setup,
+# watchdog, missing launchers). --tsv is for the app's Settings > Status:
+# one "status<TAB>id<TAB>title<TAB>detail<TAB>fix" line per check, status
+# ok|warn|fail, fix an action id or empty. Never asks for the Keychain
+# password: it only looks for the item, which doesn't prompt.
+cmd_doctor() {
+  local tsv=0 fix=0 a
+  for a in "$@"; do
+    case "$a" in
+      --tsv) tsv=1 ;;
+      --fix) fix=1 ;;
+      *) err "Usage: lanes doctor [--fix] [--tsv]" ;;
+    esac
+  done
+  local -a rows=()
+  row() { rows+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"${4:-}"$'\t'"${5:-}") }
+
+  # Claude Desktop, the one thing everything else clones.
+  local claude="" installed=""
+  for a in "/Applications/Claude.app" "$HOME/Applications/Claude.app"; do
+    [[ -d "$a" ]] && { claude="$a"; break }
+  done
+  if [[ -n "$claude" ]]; then
+    installed=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$claude/Contents/Info.plist" 2>/dev/null || true)
+    row ok claude "Claude Desktop is installed" "${installed:+Version $installed, }$claude"
+  else
+    row fail claude "Claude Desktop isn't installed" "Install it from claude.ai/download into Applications." download-claude
+  fi
+
+  # The Lanes app, its setup for this version, and whether it's running.
+  local app="" stamp_want=""
+  if app=$(manager_app) && is_swiftui_manager "$app"; then
+    row ok app "Lanes is installed" "$app"
+    stamp_want="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null) $app/Contents/Resources/lanes"
+    if [[ "$(cat "$CACHE_DIR/setup" 2>/dev/null)" == "$stamp_want" ]]; then
+      row ok setup "Launchers point at this copy of Lanes"
+    else
+      row warn setup "Launchers aren't set up for this copy of Lanes" "Opening Lanes does it; or fix it here." setup
+    fi
+    if pgrep -qf "$app/Contents/MacOS/Lanes"; then
+      row ok running "Lanes is running"
+    else
+      row warn running "Lanes isn't running" "Usage, alerts and link routing only work while it runs." open-app
+    fi
+  else
+    row warn app "The Lanes app isn't installed" "Install it with: curl -fsSL https://lanes.pego.tech/install | sh"
+  fi
+
+  # The watchdog that puts relaunched clones back on their own data.
+  if launchctl print "gui/$(id -u)/$WATCH_LABEL" >/dev/null 2>&1; then
+    row ok watchdog "The watchdog is running"
+  else
+    row warn watchdog "The watchdog isn't running" "Without it, a profile Claude relaunches after an update can open on the default account." watchdog
+  fi
+
+  # The Keychain item Claude keeps its cookie key in (created by Claude's
+  # first launch). Looking it up without -w reads no secret: no prompt.
+  if security find-generic-password -s "Claude Safe Storage" >/dev/null 2>&1; then
+    row ok keychain "Claude's Keychain item exists" "Lanes reads it to see usage; macOS asks once."
+  else
+    row warn keychain "Claude's Keychain item is missing" "Open Claude Desktop and sign in once; it creates the item Lanes needs to read usage."
+  fi
+
+  # Each profile: its launcher, its clone's version, its sign-in.
+  local tsvfile="$DATA_DIR/usage.tsv" d name v
+  typeset -A uerr
+  local line
+  if [[ -f "$tsvfile" ]]; then
+    # Split by hand: read with IFS=tab would merge empty columns.
+    while IFS= read -r line; do
+      [[ "$line" == \#* || -z "$line" ]] && continue
+      local -a col=("${(@ps:\t:)line}")
+      uerr[${col[1]}]="${col[8]:-}"
+    done < "$tsvfile"
+  fi
+  for d in "$PROFILES_DIR"/*(N/); do
+    name="${d:t}"
+    if [[ -d "$LAUNCHER_DIR/Claude $name.app" ]]; then
+      row ok "launcher:$name" "$name: launcher in place"
+    else
+      row fail "launcher:$name" "$name: launcher missing" "Spotlight can't open this profile." "launcher:$name"
+    fi
+    v=""
+    [[ -f "$CLONES_DIR/Claude $name.app/Contents/Info.plist" ]] &&
+      v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CLONES_DIR/Claude $name.app/Contents/Info.plist" 2>/dev/null || true)
+    if [[ -n "$v" && -n "$installed" ]] && version_lt "$v" "$installed"; then
+      row warn "clone:$name" "$name runs Claude $v" "Claude $installed is installed; $name catches up the next time it starts."
+    fi
+  done
+  for name in "${(@ko)uerr}"; do
+    a="${uerr[$name]}"
+    case "$a" in
+      "") ;;
+      "not signed in"|"session expired")
+        row warn "signin:$name" "$name: $a" "Open it and sign in to see its usage." "signin:$name" ;;
+      *) row warn "usage:$name" "$name: can't read usage" "$a" ;;
+    esac
+  done
+
+  # The usage snapshot the app writes after every check.
+  if [[ -f "$tsvfile" ]]; then
+    local updated age
+    updated=$(head -1 "$tsvfile" | awk '{ print $3 }')
+    age=$(( $(date +%s) - ${updated:-0} ))
+    if (( age > 3600 )); then
+      row warn usage "Usage was last checked $(( age / 60 )) minutes ago" "Lanes checks every few minutes while it runs."
+    else
+      row ok usage "Usage is up to date" "Checked $(( age / 60 )) min ago."
+    fi
+  fi
+
+  if (( fix )); then
+    local r f
+    for r in "${rows[@]}"; do
+      f="${${(@ps:\t:)r}[5]}"
+      case "$f" in
+        setup) [[ -n "$app" ]] && zsh "$app/Contents/Resources/lanes" setup && ok "Set up launchers for $app" ;;
+        watchdog) install_watchdog ;;
+        launcher:*) cmd_add "${f#launcher:}" ;;
+      esac
+    done
+    # Report on the repaired state.
+    if (( tsv )); then cmd_doctor --tsv; else cmd_doctor; fi
+    return
+  fi
+
+  local fails=0 r st
+  for r in "${rows[@]}"; do
+    local -a f=("${(@ps:\t:)r}")
+    [[ "${f[1]}" == fail ]] && fails=$(( fails + 1 ))
+    if (( tsv )); then
+      print -r -- "$r"
+    else
+      case "${f[1]}" in ok) st="✓" ;; warn) st="⚠" ;; *) st="✗" ;; esac
+      print -r -- "$st ${f[3]}"
+      [[ "${f[1]}" != ok && -n "${f[4]}" ]] && print -r -- "    ${f[4]}"
+    fi
+  done
+  if (( ! tsv )); then
+    local fixable=0
+    for r in "${rows[@]}"; do [[ "${${(@ps:\t:)r}[5]}" == (setup|watchdog|launcher:*) ]] && fixable=1; done
+    (( fixable )) && print -- "\nRun 'lanes doctor --fix' to repair what can be repaired from here."
+  fi
+  (( fails == 0 ))
+}
+
 cmd_list() {
   local d found=0
   for d in "$PROFILES_DIR"/*(N/); do
@@ -1421,6 +1570,8 @@ USAGE
                                    Up to 30 days of usage readings, as CSV
 
 MAINTENANCE
+  lanes doctor [--fix] [--tsv]     Check Claude, the app, launchers, watchdog,
+                                   Keychain and sign-ins; --fix repairs what it can
   lanes watchdog [install|uninstall|status]
                                    The LaunchAgent that puts a profile back on its
                                    own data after an update relaunches it
@@ -1448,6 +1599,7 @@ case "${1:-help}" in
   usage)   shift; cmd_usage "$@" ;;
   history) shift; cmd_history "$@" ;;
   remove)  shift; cmd_remove "$@" ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   gui)     cmd_gui ;;
   chooser) shift; cmd_chooser "$@" ;;
   setup)   shift; cmd_setup "$@" ;;

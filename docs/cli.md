@@ -48,6 +48,7 @@ its launcher is **Claude Client Acme**. The colors are `orange`, `red`,
 | `lanes list` | Profiles, their data folders, and whether each launcher is in place. |
 | `lanes color <name> <color>` | Changes a profile's color. A running profile picks it up on its next launch. |
 | `lanes remove <name> [--keep-data \| --delete-data]` | Removes the launcher, and optionally the data folder. Without a flag, it asks. |
+| `lanes doctor [--fix] [--tsv]` | Checks what Lanes depends on: Claude Desktop, the app and its setup, the watchdog, Claude's Keychain item, each profile's launcher and sign-in, and how fresh usage is. Says how to fix what's off; `--fix` repairs what it can from the Terminal (setup, watchdog, missing launchers). Exits 1 when something failed. `--tsv` prints `status, id, title, detail, fix` per line, as **Settings → Status** reads it. It never asks for the Keychain password. |
 | `lanes watchdog [install \| uninstall \| status]` | Manages the LaunchAgent that puts profiles back on their own data after an update relaunches them. `status` also lists any strays. |
 | `lanes watch [--once]` | What the watchdog runs every three seconds. |
 | `lanes update [--check]` | Installs the latest release of Lanes.app in place of the installed one, and reopens it if it was running. `--check` only reports whether there is one. The app does the same on its own unless **Settings → Updates** says otherwise. |

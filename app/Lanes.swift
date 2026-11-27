@@ -51,6 +51,12 @@ final class ProfileStore: ObservableObject {
     @Published var lastUsageUpdate: Date?
     @Published var isRefreshingUsage = false
     @Published var removeRequest: Profile?         // set from the menu bar, confirmed by the window
+    // Settings > Status (Health.swift); refreshed with usage and when shown.
+    @Published var health: [HealthCheck] = []
+    // First launch: the welcome sheet, and the prompts it holds back.
+    @Published var showWelcome = false
+    var welcomePending = false
+    @Published var isCheckingHealth = false
 
     // Preferences, persisted in UserDefaults.
     @Published var alertsEnabled = UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true {
@@ -162,7 +168,14 @@ final class ProfileStore: ObservableObject {
         scheduleUsageTimer()
         Notifier.shared.attach()
         registerAlertCategories()
-        if alertsEnabled { Notifier.shared.setUp() }
+        // A first install shows the welcome first: the Keychain and
+        // notification prompts wait for its step that explains them.
+        if UserDefaults.standard.string(forKey: "lastRunVersion") == nil,
+           !FileManager.default.fileExists(atPath: UsageHistory.path) {
+            showWelcome = true
+            welcomePending = true
+        }
+        if alertsEnabled && !welcomePending { Notifier.shared.setUp() }
         GlobalShortcut.setEnabled(.panel, shortcutEnabled)
         GlobalShortcut.setEnabled(.best, bestShortcutEnabled)
         refreshUsage()
@@ -178,8 +191,14 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-
-
+    // The welcome's permissions step is done (or the sheet was closed):
+    // ask for notifications and read usage, which may ask the Keychain.
+    func finishWelcome() {
+        guard welcomePending else { return }
+        welcomePending = false
+        if alertsEnabled && live { Notifier.shared.setUp() }
+        refreshUsage()
+    }
 
     // The Claude version a profile runs: its own clone, or the installed app.
     func claudeVersion(of p: Profile) -> String? {

@@ -423,6 +423,41 @@ enum UnitTests {
             equal(s.alternative(to: "Work"), nil)
         }
 
+        // MARK: health
+
+        test("HealthCheck.parse reads lanes doctor --tsv, empty fields kept") {
+            let tsv = "ok\tclaude\tClaude Desktop is installed\tVersion 1.2\t\n"
+                + "warn\twatchdog\tThe watchdog isn't running\tWhy it matters.\twatchdog\n"
+                + "fail\tlauncher:Client Acme\tClient Acme: launcher missing\t\tlauncher:Client Acme\n"
+                + "bogus\tx\tUnknown status\t\t\n"
+                + "ok\tshort\n"
+                + "ok\tsetup\tLaunchers point at this copy of Lanes"
+            let c = HealthCheck.parse(tsv: tsv)
+            equal(c.map(\.id), ["claude", "watchdog", "launcher:Client Acme", "setup"])
+            equal(c[0].detail, "Version 1.2")
+            equal(c[0].fix, nil)
+            equal(c[1].status, .warn)
+            equal(c[1].fixTitle, "Fix")
+            equal(c[2].status, .fail)
+            equal(c[2].detail, "")
+            equal(c[2].fix, "launcher:Client Acme")
+            equal(c[2].fixTitle, "Recreate")
+            equal(c[3].detail, "")
+            equal(HealthCheck(id: "s", status: .warn, title: "", fix: "signin:Work").fixTitle, "Open")
+            equal(HealthCheck(id: "x", status: .warn, title: "", fix: "something-new").fixTitle, nil)
+        }
+
+        test("healthNeedsAttention ignores choices and self-healing") {
+            let s = ProfileStore(live: false)
+            s.health = [HealthCheck(id: "login", status: .warn, title: ""),
+                        HealthCheck(id: "clone:Work", status: .warn, title: ""),
+                        HealthCheck(id: "claude", status: .ok, title: "")]
+            equal(s.healthIssues.count, 2)
+            expect(!s.healthNeedsAttention)
+            s.health.append(HealthCheck(id: "watchdog", status: .warn, title: ""))
+            expect(s.healthNeedsAttention)
+        }
+
         print(failures == 0 ? "unit tests: \(checks) checks passed" : "unit tests: \(failures) of \(checks) failed")
         exit(failures == 0 ? 0 : 1)
     }

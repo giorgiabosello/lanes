@@ -19,7 +19,7 @@ extension ProfileStore {
     }
 
     func refreshUsage() {
-        guard live, !isRefreshingUsage else { return }
+        guard live, !isRefreshingUsage, !welcomePending else { return }
         isRefreshingUsage = true
         let targets = profiles.map { ($0.id, dataPath(of: $0)) }
         Task.detached {
@@ -44,6 +44,8 @@ extension ProfileStore {
                 self.lastUsageUpdate = Date()
                 self.isRefreshingUsage = false
                 self.publishUsage()
+                // Sign-ins and Keychain access just got their answer.
+                self.checkHealth()
             }
         }
     }

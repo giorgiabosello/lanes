@@ -7,11 +7,12 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject var store: ProfileStore
     @AppStorage("settingsTab") private var tab: Tab = .general
+    @Environment(\.openWindow) private var openWindow
     // The screenshot renderer picks the pane to draw.
     var initialTab: Tab? = nil
 
     enum Tab: String, CaseIterable, Identifiable {
-        case general, alerts, shortcuts, updates
+        case general, alerts, shortcuts, updates, status
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -19,6 +20,7 @@ struct SettingsView: View {
             case .alerts: "Alerts"
             case .shortcuts: "Shortcuts"
             case .updates: "Updates"
+            case .status: "Status"
             }
         }
         var symbol: String {
@@ -27,6 +29,7 @@ struct SettingsView: View {
             case .alerts: "bell.badge"
             case .shortcuts: "command"
             case .updates: "arrow.down.circle"
+            case .status: "stethoscope"
             }
         }
     }
@@ -37,7 +40,7 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabBar(selection: $tab)
+            TabBar(selection: $tab, flagged: store.healthNeedsAttention ? [.status] : [])
             Divider()
             Form { pane }
                 .formStyle(.grouped)
@@ -46,8 +49,11 @@ struct SettingsView: View {
                 .tint(Brand.coral)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(width: 460)
-        .onAppear { if let initialTab { tab = initialTab } }
+        .frame(width: 500)
+        .onAppear {
+            if let initialTab { tab = initialTab }
+            store.checkHealth()
+        }
     }
 
     @ViewBuilder private var pane: some View {
@@ -56,6 +62,7 @@ struct SettingsView: View {
         case .alerts: alerts
         case .shortcuts: shortcuts
         case .updates: updates
+        case .status: status
         }
     }
 
@@ -78,7 +85,17 @@ struct SettingsView: View {
                           "Sign-in and “open in app” links go to the profile they belong to. Off, macOS hands them to whichever Claude is running.")
             }
         } footer: {
-            note("No telemetry. Usage is read from claude.ai with each profile's own session, and stays on this Mac.")
+            HStack(alignment: .top) {
+                note("No telemetry. Usage is read from claude.ai with each profile's own session, and stays on this Mac.")
+                Button("Show Welcome") {
+                    store.showWelcome = true
+                    openWindow(id: "main")
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .foregroundStyle(Brand.coral)
+                .fixedSize()
+            }
         }
     }
 
@@ -94,7 +111,7 @@ struct SettingsView: View {
                 Button("Send Test Alert") { store.sendTestAlert() }
                     .buttonStyle(.link)
                     .font(.caption)
-                    .tint(Brand.coral)
+                    .foregroundStyle(Brand.coral)
                     .disabled(!store.alertsEnabled)
             }
         }
@@ -164,7 +181,60 @@ struct SettingsView: View {
                 Button("What's New") { WhatsNewWindow.show() }
                     .buttonStyle(.link)
                     .font(.caption)
-                    .tint(Brand.coral)
+                    .foregroundStyle(Brand.coral)
+            }
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        let issues = store.healthIssues
+        Section {
+            if store.health.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking…").foregroundStyle(.secondary)
+                }
+            } else if issues.isEmpty {
+                Label("Everything Lanes needs is in place.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            }
+            ForEach(issues) { healthRow($0) }
+        } header: {
+            if !issues.isEmpty {
+                Text(issues.count == 1 ? "1 thing to look at" : "\(issues.count) things to look at")
+            }
+        }
+        let fine = store.health.filter { $0.status == .ok }
+        if !fine.isEmpty {
+            Section {
+                ForEach(fine) { healthRow($0) }
+            } footer: {
+                HStack {
+                    note("The same checks from the Terminal: lanes doctor")
+                    Spacer()
+                    Button("Check Again") { store.checkHealth() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .foregroundStyle(Brand.coral)
+                        .disabled(store.isCheckingHealth)
+                }
+            }
+        }
+    }
+
+    private func healthRow(_ c: HealthCheck) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: c.status == .ok ? "checkmark.circle.fill"
+                  : c.status == .warn ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                .foregroundStyle(c.status == .ok ? Color.green : c.status == .warn ? Color.orange : Color.red)
+            if c.status == .ok {
+                Text(c.title).foregroundStyle(.secondary)
+            } else {
+                described(c.title, c.detail)
+            }
+            Spacer()
+            if c.status != .ok, let fix = c.fix, let title = c.fixTitle {
+                Button(title) { store.fix(fix) }
             }
         }
     }
@@ -218,6 +288,7 @@ struct SettingsView: View {
 // windows: a symbol over a label, the selected one tinted.
 private struct TabBar: View {
     @Binding var selection: SettingsView.Tab
+    var flagged: Set<SettingsView.Tab> = []
 
     var body: some View {
         HStack(spacing: 4) {
@@ -228,9 +299,14 @@ private struct TabBar: View {
                         Image(systemName: t.symbol)
                             .font(.system(size: 17, weight: .regular))
                             .frame(height: 22)
+                            .overlay(alignment: .topTrailing) {
+                                if flagged.contains(t) {
+                                    Circle().fill(Color.orange).frame(width: 7, height: 7).offset(x: 4, y: -1)
+                                }
+                            }
                         Text(t.title).font(.system(size: 11))
                     }
-                    .frame(width: 76, height: 48)
+                    .frame(width: 66, height: 48)
                     .foregroundStyle(on ? AnyShapeStyle(Brand.coral) : AnyShapeStyle(.secondary))
                     .background(RoundedRectangle(cornerRadius: 7).fill(on ? Color.primary.opacity(0.08) : .clear))
                     .contentShape(Rectangle())

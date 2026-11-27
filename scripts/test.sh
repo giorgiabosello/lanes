@@ -77,6 +77,17 @@ check "launcher signature verifies" codesign --verify "$launcher"
 check "watchdog points at the app's lanes" grep -qF "$installed/Contents/Resources/lanes" "$sandbox/Library/LaunchAgents/$label.plist"
 check "launcher has a Lanes bundle id" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$launcher/Contents/Info.plist")" = io.github.pego.lanes.profile.test
 check "setup leaves the app's signature intact" codesign --verify --deep --strict "$installed"
+doctor() { HOME="$sandbox" LANES_WATCH_LABEL="$label" zsh "$installed/Contents/Resources/lanes" doctor "$@" }
+# doctor exits 1 when a check fails, and grep -q quitting early SIGPIPEs it;
+# the report is what's tested here.
+doctor_says() { { doctor --tsv || true } | grep -q "^$1	$2	" }
+check "doctor: launcher in place" doctor_says ok "launcher:Test"
+check "doctor: setup is current" doctor_says ok setup
+check "doctor: TSV rows have five fields" sh -c 'HOME="$1" LANES_WATCH_LABEL="$2" zsh "$3" doctor --tsv | awk -F"\t" "NF != 5 { bad = 1 } END { exit bad }"' _ "$sandbox" "$label" "$installed/Contents/Resources/lanes"
+mkdir -p "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
+check "doctor: a missing launcher fails" sh -c '! HOME="$1" LANES_WATCH_LABEL="$2" zsh "$3" doctor >/dev/null 2>&1' _ "$sandbox" "$label" "$installed/Contents/Resources/lanes"
+check "doctor: flags it with a fix" doctor_says fail "launcher:Orphan"
+rmdir "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
 touch -t 200001010000 "$launcher"
 setup --if-needed >/dev/null 2>&1
 check "setup --if-needed skips when current" test "$(stat -f %Sm -t %Y "$launcher")" = 2000

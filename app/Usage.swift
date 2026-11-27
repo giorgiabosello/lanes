@@ -98,8 +98,15 @@ enum ChromiumKey {
         if let failure, Date().timeIntervalSince(failure.at) < retryAfter { throw failure.error }
         do {
             // macOS asks once; "Always Allow" makes it silent afterwards.
-            let pw = try runTool("/usr/bin/security", ["find-generic-password", "-w", "-s", "Claude Safe Storage"])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let pw: String
+            do {
+                pw = try runTool("/usr/bin/security", ["find-generic-password", "-w", "-s", "Claude Safe Storage"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                // security's own wording is no help on a lane: say which case it is.
+                throw usageError(error.localizedDescription.contains("could not be found")
+                                 ? "Claude's Keychain item is missing" : "no Keychain access")
+            }
             let key = try derive(password: pw)
             cached = key
             failure = nil
@@ -115,6 +122,26 @@ enum ChromiumKey {
         lock.lock()
         cached = nil
         lock.unlock()
+    }
+
+    // "Try Again" from Settings > Status: ask the Keychain on the next check,
+    // even within a minute of a denial.
+    static func reset() {
+        lock.lock()
+        cached = nil
+        failure = nil
+        lock.unlock()
+    }
+
+    enum State { case unknown, ok, denied(String) }
+    // Never waits: while a read holds the lock (a Keychain prompt may be up),
+    // the answer is "unknown", not a frozen main thread.
+    static var state: State {
+        guard lock.try() else { return .unknown }
+        defer { lock.unlock() }
+        if cached != nil { return .ok }
+        if let failure { return .denied(failure.error.localizedDescription) }
+        return .unknown
     }
 
     static func derive(password pw: String) throws -> Data {
