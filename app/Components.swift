@@ -177,12 +177,22 @@ struct MeterCell: View {
 // Why a lane has no meters: not signed in, an error, or nothing loaded yet.
 struct LaneNote: View {
     let usage: Usage?
+    var signIn: (() -> Void)? = nil
+    var retry: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             if let usage {
                 Image(systemName: symbol(usage))
-                Text(text(usage))
+                // With the button beside it, the note can be short.
+                Text(usage.needsSignIn && signIn != nil ? (usage.error == "session expired" ? "Signed out" : "Not signed in")
+                     : text(usage))
+                    .help(why(usage))
+                if usage.needsSignIn, let signIn {
+                    noteButton("Open and sign in", action: signIn)
+                } else if usage.error != nil, let retry {
+                    noteButton("Try again", action: retry)
+                }
             } else {
                 ProgressView().controlSize(.mini)
                 Text("Loading usage…")
@@ -199,6 +209,37 @@ struct LaneNote: View {
         return "chart.bar"
     }
 
+    private func noteButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 2) {
+                Text(title)
+                Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
+            }
+            .fontWeight(.medium)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Brand.coral)
+    }
+
+    // The tooltip: what happened, in plain words, and what helps.
+    private func why(_ u: Usage) -> String {
+        guard let e = u.error else { return "" }
+        if u.needsSignIn {
+            return e == "session expired"
+                ? "claude.ai signed this profile out. Open it and sign in again to see its usage."
+                : "This profile isn't signed in to Claude yet. Open it and sign in to see its usage."
+        }
+        if e == "no Keychain access" {
+            return "Lanes needs the key in “Claude Safe Storage” to read usage, and macOS said no. Try again and choose Always Allow; Settings → Status has more."
+        }
+        if e == "Claude's Keychain item is missing" {
+            return "Claude Desktop creates this item the first time it runs. Open Claude once, then try again."
+        }
+        if e == "timed out" { return "claude.ai took too long to answer. Lanes tries again on its own every few minutes." }
+        if u.formatChanged { return "claude.ai answered in a way Lanes doesn't understand; a Lanes update usually fixes it." }
+        return "The usage check failed (\(e)). Lanes tries again on its own every few minutes."
+    }
+
     private func text(_ u: Usage) -> String {
         if u.needsSignIn { return "Sign in to see usage" }
         if let e = u.error { return "Usage unavailable: \(e)" }
@@ -212,6 +253,9 @@ struct UsagePair: View {
     let tint: Color
     var compact = false
     var spacing: CGFloat = 16
+    // What the lane's note offers when there are no numbers.
+    var signIn: (() -> Void)? = nil
+    var retry: (() -> Void)? = nil
 
     var body: some View {
         if let u = usage, u.error == nil, !u.hasNoData {
@@ -223,11 +267,11 @@ struct UsagePair: View {
                               window: LimitWindow.week, tint: tint, forecast: u.sevenDayPace, compact: compact)
                 }
                 if let since = u.staleSince {
-                    StaleNote(since: since, error: u.staleError)
+                    StaleNote(since: since, error: u.staleError, fromClaudeDesktop: u.fromClaudeDesktop)
                 }
             }
         } else {
-            LaneNote(usage: usage)
+            LaneNote(usage: usage, signIn: signIn, retry: retry)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -237,13 +281,19 @@ struct UsagePair: View {
 struct StaleNote: View {
     let since: Date
     let error: String?
+    var fromClaudeDesktop = false
 
     var body: some View {
         Label("As of \(clockText(since)): couldn't refresh", systemImage: "exclamationmark.arrow.circlepath")
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .help(error.map { "The last usage check failed (\($0)). Lanes keeps showing the previous numbers for up to an hour." } ?? "")
+            .help(error.map {
+                "The last usage check failed (\($0)). "
+                    + (fromClaudeDesktop
+                       ? "These numbers are the last ones Claude Desktop recorded itself, shown for up to an hour."
+                       : "Lanes keeps showing the previous numbers for up to an hour.")
+            } ?? "")
     }
 }
 
@@ -348,3 +398,25 @@ func profileDisplayName(_ raw: String) -> String {
 }
 
 func tildePath(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+
+// The Settings button's gear, with an orange dot when Settings > Status has
+// something that needs a look.
+struct SettingsGear: View {
+    let flagged: Bool
+    let size: CGFloat
+
+    var body: some View {
+        Image(systemName: "gearshape")
+            .frame(width: size, height: size)
+            .overlay(alignment: .topTrailing) {
+                if flagged {
+                    Circle().fill(Color.orange).frame(width: 6, height: 6).offset(x: 2, y: -1)
+                }
+            }
+    }
+
+    // With something to look at, Settings opens on Status.
+    static func prepare(_ store: ProfileStore) {
+        if store.healthNeedsAttention { UserDefaults.standard.set(SettingsView.Tab.status.rawValue, forKey: "settingsTab") }
+    }
+}

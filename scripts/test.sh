@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Release checks: builds the app (skip with --no-build), verifies the bundle,
+# Release checks: runs the unit tests (scripts/unit-tests.sh), builds the
+# app (skip with --no-build), verifies the bundle,
 # then installs the zip the way a download arrives (quarantined) into a
 # throwaway HOME and runs the app's first-launch setup there. The real
 # ~/Applications, profiles and watchdog are never touched; Claude.app is only
@@ -24,6 +25,44 @@ HELPER_REL="Contents/Resources/Lanes Helper.app/Contents/MacOS/Lanes Helper"
 version=$(zsh bin/lanes version)
 
 check "lanes parses" zsh -n bin/lanes
+check "unit tests pass" scripts/unit-tests.sh
+
+# ---- `lanes claude` and the status line, with a stand-in claude -------------
+
+cli_home=${$(mktemp -d):A}
+mkdir -p "$cli_home/Library/Application Support/Lanes/profiles/Work" "$cli_home/bin"
+print -r -- '#!/bin/sh
+echo "${CLAUDE_CONFIG_DIR-unset} $*"' > "$cli_home/bin/claude"
+chmod +x "$cli_home/bin/claude"
+printf '# updated %s\nDefault\torange\t0\t92\t\t10\t\t\t\t\t\t\nWork\tblue\t0\t20\t\t30\t\t\t\t\t\t\n' \
+  "$(date +%s)" > "$cli_home/Library/Application Support/Lanes/usage.tsv"
+lanes_cli() { HOME="$cli_home" PATH="$cli_home/bin:/usr/bin:/bin" NO_COLOR=1 zsh bin/lanes "$@" 2>/dev/null }
+cli_says() { [[ "$(lanes_cli "${@:2}")" == "$1" ]] }
+work_cfg="$cli_home/Library/Application Support/Lanes/profiles/Work/claude-config"
+check "claude: runs on the profile's config" cli_says "$work_cfg -p hi" claude work -- -p hi
+check "claude: passes args without --" cli_says "$work_cfg --version" claude work --version
+check "claude: default clears CLAUDE_CONFIG_DIR" sh -c 'CLAUDE_CONFIG_DIR=/x HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude default 2>/dev/null | grep -qx "unset "' _ "$cli_home"
+check "claude: --best picks the roomiest" cli_says "$work_cfg " claude --best
+check "claude: unknown profile fails" sh -c '! HOME="$1" PATH="$1/bin:/usr/bin:/bin" zsh bin/lanes claude ghost' _ "$cli_home"
+check "statusline: profile from CLAUDE_CONFIG_DIR" sh -c '[ "$(CLAUDE_CONFIG_DIR="$2" HOME="$1" NO_COLOR=1 zsh bin/lanes usage --statusline)" = "Work · 5h 20% · week 30%" ]' _ "$cli_home" "$work_cfg"
+check "statusline: Default without it" cli_says "Default · 5h 92% · week 10%" usage --statusline
+check "statusline: red at 90%" sh -c 'HOME="$1" zsh bin/lanes usage --statusline default | grep -q "$(printf "\033\\[31m92%%")"' _ "$cli_home"
+
+# `lanes statusline` edits settings.json: adds, keeps the rest, leaves others alone.
+mkdir -p "$cli_home/Library/Application Support/Lanes/profiles/Own/claude-config" "$work_cfg"
+print -r -- '{"model":"opus"}' > "$work_cfg/settings.json"
+print -r -- '{"statusLine":{"type":"command","command":"mine.sh"}}' > "$cli_home/Library/Application Support/Lanes/profiles/Own/claude-config/settings.json"
+sl_state() { lanes_cli statusline --tsv | awk -F'\t' -v p="$1" '$1 == p { print $2 }' }
+check "statusline: starts off" test "$(sl_state Work)" = off
+check "statusline on: succeeds" lanes_cli statusline on
+check "statusline on: adds it" test "$(sl_state Work)" = on
+check "statusline on: keeps other settings" grep -q '"model": "opus"' "$work_cfg/settings.json"
+check "statusline on: keeps a backup" grep -q '"model":"opus"' "$work_cfg/settings.json.lanes-backup"
+check "statusline on: leaves a custom one alone" test "$(sl_state Own)" = other
+check "statusline off: removes it" sh -c 'HOME="$1" zsh bin/lanes statusline off work >/dev/null && ! grep -q statusLine "$2/settings.json"' _ "$cli_home" "$work_cfg"
+check "whats-new: prints this version" sh -c 'zsh bin/lanes whats-new | head -1 | grep -qF "Lanes $1:"' _ "$version"
+check "whats-new: hides try comments" sh -c '! zsh bin/lanes whats-new | grep -q "<!--"'
+rm -rf "$cli_home"
 if [[ "${1:-}" != "--no-build" ]]; then
   scripts/build.sh >/dev/null 2>&1 || { print -- "FAIL build"; exit 1 }
 fi
@@ -75,6 +114,17 @@ check "launcher signature verifies" codesign --verify "$launcher"
 check "watchdog points at the app's lanes" grep -qF "$installed/Contents/Resources/lanes" "$sandbox/Library/LaunchAgents/$label.plist"
 check "launcher has a Lanes bundle id" test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$launcher/Contents/Info.plist")" = io.github.pego.lanes.profile.test
 check "setup leaves the app's signature intact" codesign --verify --deep --strict "$installed"
+doctor() { HOME="$sandbox" LANES_WATCH_LABEL="$label" zsh "$installed/Contents/Resources/lanes" doctor "$@" }
+# doctor exits 1 when a check fails, and grep -q quitting early SIGPIPEs it;
+# the report is what's tested here.
+doctor_says() { { doctor --tsv || true } | grep -q "^$1	$2	" }
+check "doctor: launcher in place" doctor_says ok "launcher:Test"
+check "doctor: setup is current" doctor_says ok setup
+check "doctor: TSV rows have five fields" sh -c 'HOME="$1" LANES_WATCH_LABEL="$2" zsh "$3" doctor --tsv | awk -F"\t" "NF != 5 { bad = 1 } END { exit bad }"' _ "$sandbox" "$label" "$installed/Contents/Resources/lanes"
+mkdir -p "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
+check "doctor: a missing launcher fails" sh -c '! HOME="$1" LANES_WATCH_LABEL="$2" zsh "$3" doctor >/dev/null 2>&1' _ "$sandbox" "$label" "$installed/Contents/Resources/lanes"
+check "doctor: flags it with a fix" doctor_says fail "launcher:Orphan"
+rmdir "$sandbox/Library/Application Support/Lanes/profiles/Orphan"
 touch -t 200001010000 "$launcher"
 setup --if-needed >/dev/null 2>&1
 check "setup --if-needed skips when current" test "$(stat -f %Sm -t %Y "$launcher")" = 2000

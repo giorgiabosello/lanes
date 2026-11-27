@@ -1,0 +1,514 @@
+// Unit tests for the app's logic: parsing claude.ai's replies (against saved
+// ones in tests/fixtures), cookie decryption, the stale/fallback rules, the
+// forecast, history and version compare. Compiled with the app's sources by
+// scripts/unit-tests.sh; no XCTest, so the Command Line Tools are enough.
+// Never touches the network, the Keychain or real profiles.
+
+import Foundation
+import CommonCrypto
+
+private var failures = 0
+private var checks = 0
+private var current = ""
+
+private func expect(_ ok: Bool, _ what: @autoclosure () -> String = "", line: Int = #line) {
+    checks += 1
+    if !ok {
+        failures += 1
+        print("FAIL \(current) (UnitTests.swift:\(line)) \(what())")
+    }
+}
+
+private func equal<T: Equatable>(_ a: T, _ b: T, line: Int = #line) {
+    expect(a == b, "\(a) != \(b)", line: line)
+}
+
+private func test(_ name: String, _ body: () throws -> Void) {
+    current = name
+    do { try body() } catch { failures += 1; print("FAIL \(name): threw \(error)") }
+}
+
+private func test(_ name: String, _ body: () async throws -> Void) async {
+    current = name
+    do { try await body() } catch { failures += 1; print("FAIL \(name): threw \(error)") }
+}
+
+private var fixtures = "tests/fixtures"
+private func fixture(_ name: String) throws -> Data {
+    try Data(contentsOf: URL(fileURLWithPath: fixtures + "/" + name))
+}
+private func fixtureJSON(_ name: String) throws -> Any {
+    try JSONSerialization.jsonObject(with: try fixture(name))
+}
+
+private func iso(_ s: String) -> Date { ISO8601DateFormatter().date(from: s)! }
+
+// AES-128-CBC the way Chromium stores cookies on macOS: "v10" + ciphertext.
+private func encryptCookie(_ plain: Data, key: Data) -> Data {
+    var out = Data(count: plain.count + kCCBlockSizeAES128)
+    var n = 0
+    let cap = out.count
+    let iv = [UInt8](repeating: 0x20, count: 16)
+    _ = out.withUnsafeMutableBytes { o in
+        CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), CCOptions(kCCOptionPKCS7Padding),
+                [UInt8](key), 16, iv, [UInt8](plain), plain.count, o.baseAddress, cap, &n)
+    }
+    return Data("v10".utf8) + out.prefix(n)
+}
+
+@main
+enum UnitTests {
+    static func main() async {
+        if CommandLine.arguments.count > 1 { fixtures = CommandLine.arguments[1] }
+
+        // MARK: versions
+
+        test("versionLessThan") {
+            expect(versionLessThan("0.9.0", "0.9.1"))
+            expect(versionLessThan("0.9.9", "0.10.0"))
+            expect(versionLessThan("1.2", "1.2.1"))
+            expect(!versionLessThan("1.2.0", "1.2"))
+            expect(!versionLessThan("0.10.0", "0.9.9"))
+            expect(!versionLessThan("1.0.0", "1.0.0"))
+        }
+
+        // MARK: claude.ai replies
+
+        test("parseUsageReply reads limits, resets and model limits") {
+            let j = try fixtureJSON("usage-chat.json") as! [String: Any]
+            let u = parseUsageReply(j)
+            equal(u.fiveHour, 42)
+            equal(u.sevenDay, 17)
+            equal(u.error, nil)
+            // Microseconds and a numeric offset, as claude.ai sends them.
+            expect(u.fiveHourReset != nil, "five_hour resets_at didn't parse")
+            equal(u.fiveHourReset.map { Int($0.timeIntervalSince1970) }, Int(iso("2026-11-25T15:00:00Z").timeIntervalSince1970))
+            equal(u.sevenDayReset, iso("2026-11-28T09:00:00Z"))
+            // Null limits are skipped, strings are read as numbers, unknown
+            // families get a readable label, sorted by key.
+            equal(u.models.map(\.key), ["seven_day_new_family", "seven_day_opus"])
+            equal(u.models.map(\.label), ["New Family", "Opus"])
+            equal(u.models.map(\.used), [3, 8.5])
+            equal(u.models.first?.reset, nil)
+        }
+
+        test("parseUsageReply on an organization without chat limits") {
+            let u = parseUsageReply(try fixtureJSON("usage-api.json") as! [String: Any])
+            expect(u.hasNoData)
+            expect(u.models.isEmpty)
+        }
+
+        await test("usage() skips organizations without numbers") {
+            let orgs = try fixtureJSON("organizations.json")
+            var asked: [String] = []
+            let r = try await usage(organizations: orgs) { id in
+                asked.append(id)
+                return try fixtureJSON(id.hasSuffix("1") ? "usage-api.json" : "usage-chat.json")
+            }
+            equal(asked.count, 2)
+            equal(r.usage.fiveHour, 42)
+            equal(r.raw.count, 2)
+            equal(r.raw.last?["name"] as? String, "Personal")
+        }
+
+        await test("usage() survives one organization failing") {
+            let orgs = try fixtureJSON("organizations.json")
+            let r = try await usage(organizations: orgs) { id in
+                if id.hasSuffix("1") { throw usageError("HTTP 500") }
+                return try fixtureJSON("usage-chat.json")
+            }
+            equal(r.usage.sevenDay, 17)
+        }
+
+        await test("usage() flags a format change when no organization answers") {
+            let orgs = try fixtureJSON("organizations.json")
+            let r = try await usage(organizations: orgs) { _ in ["unexpected": true] as [String: Any] }
+            expect(r.usage.hasNoData, "an empty reply should read as no data")
+            let none = try await usage(organizations: orgs) { _ in throw usageError("HTTP 404", formatChanged: true) }
+            equal(none.usage.error, "unexpected response")
+            expect(none.usage.formatChanged)
+        }
+
+        await test("usage() with no organizations throws") {
+            for orgs: Any in [[[String: Any]](), ["not": "a list"]] {
+                do {
+                    _ = try await usage(organizations: orgs) { _ in [:] as [String: Any] }
+                    expect(false, "expected a throw for \(orgs)")
+                } catch {
+                    equal(error.localizedDescription, "no organization")
+                }
+            }
+        }
+
+        test("isFormatError") {
+            expect(isFormatError(usageError("HTTP 404", formatChanged: true)))
+            expect(!isFormatError(usageError("HTTP 500")))
+            expect(isFormatError(NSError(domain: NSCocoaErrorDomain, code: 3840)))
+            expect(!isFormatError(URLError(.timedOut)))
+        }
+
+        // MARK: cookies
+
+        test("decryptCookie round-trips Chromium's v10 format") {
+            let key = try ChromiumKey.derive(password: "test-password")
+            equal(key.count, 16)
+            equal(try ChromiumKey.derive(password: "test-password"), key)
+            expect(try ChromiumKey.derive(password: "other") != key)
+            let blob = encryptCookie(Data("sk-ant-abc".utf8), key: key)
+            equal(decryptCookie(blob, key: key), "sk-ant-abc")
+            // Newer Chromium: a 32-byte host hash before the value.
+            let hashed = encryptCookie(Data(repeating: 0xFF, count: 32) + Data("value".utf8), key: key)
+            equal(decryptCookie(hashed, key: key), "value")
+            // Not v10, or the wrong key.
+            equal(decryptCookie(Data("v11xxxxxxxxxxxxxxxx".utf8), key: key), nil)
+            equal(decryptCookie(blob, key: try ChromiumKey.derive(password: "other")), nil)
+        }
+
+        test("Data(hexString:)") {
+            equal(Data(hexString: "00ff10"), Data([0x00, 0xFF, 0x10]))
+            equal(Data(hexString: "abc"), nil)
+            equal(Data(hexString: "zz"), nil)
+        }
+
+        // MARK: Claude Desktop's record
+
+        test("LocalUsage.latest picks the newest reading with numbers") {
+            let r = LocalUsage.latest(json: try fixture("plan-usage-history.json"))
+            equal(r?.t, Date(timeIntervalSince1970: 1795604411.441))
+            equal(r?.fiveHour, 22)
+            equal(r?.sevenDay, 39)
+            equal(LocalUsage.latest(json: Data("not json".utf8)), nil)
+            equal(LocalUsage.latest(json: Data(#"{"version":3,"samples":"nope"}"#.utf8)), nil)
+            equal(LocalUsage.latest(json: Data(#"{"samples":[]}"#.utf8)), nil)
+            equal(LocalUsage.latest(dataDir: "/nonexistent"), nil)
+        }
+
+        // MARK: stale numbers and the fallback
+
+        let now = iso("2026-11-25T12:00:00Z")
+        let ok = Usage(fiveHour: 40, sevenDay: 20, fiveHourReset: now.addingTimeInterval(3600),
+                       sevenDayReset: now.addingTimeInterval(3 * 86400), error: nil)
+        let failed = Usage(fiveHour: nil, sevenDay: nil, error: "HTTP 500")
+        func merge(_ fresh: Usage, prev: Usage?, at: Date?, local: LocalUsage.Reading?) -> Usage {
+            ProfileStore.merge(fresh: fresh, previous: prev, previousAt: at, local: local, now: now)
+        }
+
+        test("merge: a successful check passes through") {
+            equal(merge(ok, prev: nil, at: nil, local: nil), ok)
+        }
+
+        test("merge: signing out clears the lane at once") {
+            let out = Usage(fiveHour: nil, sevenDay: nil, error: "session expired")
+            equal(merge(out, prev: ok, at: now, local: LocalUsage.Reading(t: now, fiveHour: 1, sevenDay: 1)), out)
+        }
+
+        test("merge: a failed check keeps the last numbers for an hour") {
+            let at = now.addingTimeInterval(-600)
+            let u = merge(failed, prev: ok, at: at, local: nil)
+            equal(u.fiveHour, 40)
+            equal(u.staleSince, at)
+            equal(u.staleError, "HTTP 500")
+            expect(!u.fromClaudeDesktop)
+            // Already stale: the clock runs from the first failure.
+            equal(merge(failed, prev: u, at: now, local: nil).staleSince, at)
+            // Past the hour: blank.
+            equal(merge(failed, prev: ok, at: now.addingTimeInterval(-3601), local: nil), failed)
+        }
+
+        test("merge: Claude Desktop's newer reading wins") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-120), fiveHour: 55, sevenDay: 21)
+            let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHour, 55)
+            equal(u.sevenDay, 21)
+            equal(u.staleSince, local.t)
+            expect(u.fromClaudeDesktop)
+            // The previous reset times still ahead, and after the reading, are kept.
+            equal(u.fiveHourReset, ok.fiveHourReset)
+            equal(u.sevenDayReset, ok.sevenDayReset)
+        }
+
+        test("merge: Claude Desktop's older reading loses") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-1200), fiveHour: 5, sevenDay: 5)
+            let u = merge(failed, prev: ok, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHour, 40)
+            expect(!u.fromClaudeDesktop)
+        }
+
+        test("merge: no reading of Lanes' own yet (launched offline)") {
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-900), fiveHour: 12, sevenDay: nil)
+            let u = merge(failed, prev: nil, at: nil, local: local)
+            equal(u.fiveHour, 12)
+            equal(u.sevenDay, nil)
+            equal(u.fiveHourReset, nil)
+            expect(u.fromClaudeDesktop)
+            expect(!u.hasNoData)
+            // Too old to show.
+            let old = LocalUsage.Reading(t: now.addingTimeInterval(-7200), fiveHour: 12, sevenDay: nil)
+            equal(merge(failed, prev: nil, at: nil, local: old), failed)
+        }
+
+        test("merge: a reset that has passed isn't carried over") {
+            var prev = ok
+            prev.fiveHourReset = now.addingTimeInterval(-60)
+            let local = LocalUsage.Reading(t: now.addingTimeInterval(-30), fiveHour: 3, sevenDay: 20)
+            let u = merge(failed, prev: prev, at: now.addingTimeInterval(-600), local: local)
+            equal(u.fiveHourReset, nil)
+            equal(u.sevenDayReset, ok.sevenDayReset)
+        }
+
+        test("merge: a format change is still reported while stale") {
+            let gone = Usage(fiveHour: nil, sevenDay: nil, error: "HTTP 404", formatChanged: true)
+            let u = merge(gone, prev: ok, at: now, local: nil)
+            expect(u.formatChanged)
+            equal(u.staleError, "HTTP 404")
+        }
+
+        // MARK: timeouts
+
+        await test("withTimeout returns a fast result") {
+            let v = try await withTimeout(1) { 7 }
+            equal(v, 7)
+        }
+
+        await test("withTimeout gives up on a slow one") {
+            let start = Date()
+            do {
+                _ = try await withTimeout(0.2) { () async throws -> Int in
+                    try await offCooperativePool { Thread.sleep(forTimeInterval: 2); return 1 }
+                }
+                expect(false, "expected a timeout")
+            } catch {
+                equal(error.localizedDescription, "timed out")
+                expect(Date().timeIntervalSince(start) < 1.5, "took \(Date().timeIntervalSince(start))s")
+            }
+        }
+
+        await test("withTimeout passes errors through") {
+            do {
+                _ = try await withTimeout(1) { () async throws -> Int in throw usageError("not signed in") }
+                expect(false, "expected a throw")
+            } catch {
+                equal(error.localizedDescription, "not signed in")
+            }
+        }
+
+        // MARK: forecast and history
+
+        test("Forecast.pace projects the recent rate to the reset") {
+            let reset = now.addingTimeInterval(2 * 3600)
+            // 10% → 30% over the last hour: 20%/h, two hours left.
+            let p = Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                  samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now)
+            equal(p.map { ($0.atReset * 10).rounded() / 10 }, 70)
+            equal(p?.runsOutAt, nil)
+            // 40%/h from 60%: out in an hour, before the reset.
+            let fast = Forecast.pace(value: 60, reset: reset, window: LimitWindow.fiveHour,
+                                     samples: [(now.addingTimeInterval(-3600), 20)], lookback: 3600, minSpan: 900, now: now)
+            equal(fast?.atReset, 100)
+            equal(fast?.runsOutAt.map { Int($0.timeIntervalSince(now)) }, 3600)
+        }
+
+        test("Forecast.pace needs enough history, in this window") {
+            let reset = now.addingTimeInterval(2 * 3600)
+            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-300), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+            // A reading from before the window started (reset - 5h) doesn't count.
+            equal(Forecast.pace(value: 30, reset: now.addingTimeInterval(4.9 * 3600), window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-1800), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+            // Usage going down (a reset in between) counts as none.
+            equal(Forecast.pace(value: 30, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-3600), 80)], lookback: 3600, minSpan: 900, now: now)?.atReset, 30)
+            equal(Forecast.pace(value: 100, reset: reset, window: LimitWindow.fiveHour,
+                                samples: [(now.addingTimeInterval(-3600), 10)], lookback: 3600, minSpan: 900, now: now), nil)
+        }
+
+        test("UsageHistory keeps one reading per ~10 minutes, for 30 days") {
+            var list: [UsageSample] = []
+            let t0 = Date()
+            UsageHistory.append(UsageSample(t: t0, h: 1, w: 1), to: &list)
+            UsageHistory.append(UsageSample(t: t0.addingTimeInterval(300), h: 2, w: 1), to: &list)
+            UsageHistory.append(UsageSample(t: t0.addingTimeInterval(600), h: 3, w: 1), to: &list)
+            equal(list.map(\.h), [1, 3])
+            var h: [String: [UsageSample]] = [
+                "Work": [UsageSample(t: t0.addingTimeInterval(-31 * 86400), h: 1, w: 1)] + list,
+                "Gone": list,
+            ]
+            UsageHistory.prune(&h, profiles: ["Work"])
+            equal(h["Work"]?.count, 2)
+            equal(h["Gone"] == nil, true)
+            let csv = UsageHistory.csv([UsageSample(t: Date(timeIntervalSince1970: 0), h: 12.5, w: nil)])
+            equal(csv, "time,five_hour,weekly\n1970-01-01T00:00:00Z,12.5,\n")
+        }
+
+        // MARK: best profile
+
+        test("bestProfile: most 5-hour room, weekly breaks ties, a full week loses") {
+            let s = ProfileStore(live: false)
+            s.profiles = ["A", "B", "C", "D"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
+            s.usage = ["A": Usage(fiveHour: 30, sevenDay: 50, error: nil),
+                       "B": Usage(fiveHour: 30, sevenDay: 10, error: nil),
+                       "C": Usage(fiveHour: 0, sevenDay: 100, error: nil),
+                       "D": Usage(fiveHour: nil, sevenDay: nil, error: "not signed in")]
+            equal(s.bestProfile()?.name, "B")
+            equal(s.roomiestProfile()?.name, "B")
+            s.usage = ["C": Usage(fiveHour: 0, sevenDay: 100, error: nil)]
+            equal(s.bestProfile()?.name, "C")
+            equal(s.roomiestProfile()?.name, nil)
+        }
+
+        // MARK: notification buttons
+
+        test("alert categories: one set per profile, buttons in order") {
+            equal(AlertAction.category(.threshold, "Personal"), "threshold|Personal")
+            equal(AlertAction.category(.pace, nil), "pace|")
+            let cats = AlertAction.categories(for: ["Default", "Work"])
+            func actions(_ id: String) -> [String]? {
+                cats.first { $0.identifier == id }?.actions.map(\.title)
+            }
+            equal(cats.count, 2 * 3 + 2)
+            equal(actions("threshold|"), ["Mute Until Reset"])
+            equal(actions("threshold|Work"), ["Open Work", "Mute Until Reset"])
+            equal(actions("pace|Default"), ["Open Default", "Notify Me at Reset", "Mute Until Reset"])
+            equal(actions("reset|Work"), ["Open Work"])
+            equal(actions("reset|"), nil)
+        }
+
+        test("Mute Until Reset silences that limit until it resets") {
+            let s = ProfileStore(live: false)
+            s.alertMutedUntil = [:]
+            let reset = Date().addingTimeInterval(1800)
+            s.handleNotification(action: AlertAction.mute,
+                                 info: ["profile": "Work", "limit": "5h", "reset": reset.timeIntervalSince1970])
+            expect(s.isMuted("Work/5h"))
+            expect(!s.isMuted("Work/7d"))
+            expect(!s.isMuted("Work/5h", now: reset.addingTimeInterval(1)))
+            // No reset known (or already past): one whole window.
+            let now = Date()
+            s.mute("Work/7d", until: now.addingTimeInterval(-10), window: LimitWindow.week, now: now)
+            equal(s.alertMutedUntil["Work/7d"], now.addingTimeInterval(LimitWindow.week).timeIntervalSince1970)
+            // Expired mutes are dropped.
+            s.mute("Studio/5h", until: nil, window: 60, now: now.addingTimeInterval(LimitWindow.week + 1))
+            equal(s.alertMutedUntil["Work/7d"], nil)
+            s.alertMutedUntil = [:]
+        }
+
+        test("Notify Me at Reset asks for a reset alert below the first level") {
+            let s = ProfileStore(live: false)
+            s.remindAtReset = [:]
+            s.alertsEnabled = true
+            s.alertWarn = 80
+            let reset = Date().addingTimeInterval(3600)
+            expect(!s.wantsResetAlert("Work/5h", value: 40, reset: reset))
+            expect(s.wantsResetAlert("Work/5h", value: 85, reset: reset))
+            s.handleNotification(action: AlertAction.remind,
+                                 info: ["profile": "Work", "limit": "5h", "reset": reset.timeIntervalSince1970])
+            expect(s.wantsResetAlert("Work/5h", value: 40, reset: reset))
+            // Only for that window, and never for a reset that has passed.
+            expect(!s.wantsResetAlert("Work/5h", value: 40, reset: reset.addingTimeInterval(5 * 3600)))
+            expect(!s.wantsResetAlert("Work/5h", value: 90, reset: Date().addingTimeInterval(-1)))
+            s.alertsEnabled = false
+            expect(!s.wantsResetAlert("Work/5h", value: 90, reset: reset))
+            s.alertsEnabled = true
+            s.remindAtReset = [:]
+        }
+
+        test("alternative: the roomiest other profile, only with half its 5 hours left") {
+            let s = ProfileStore(live: false)
+            s.profiles = ["Work", "Personal"].map { Profile(name: $0, dataDir: "/tmp/\($0)", colorName: "blue") }
+            s.usage = ["Work": Usage(fiveHour: 90, sevenDay: 50, error: nil),
+                       "Personal": Usage(fiveHour: 20, sevenDay: 10, error: nil)]
+            equal(s.alternative(to: "Work")?.name, "Personal")
+            equal(s.alternative(to: "Personal"), nil)
+            s.usage["Personal"] = Usage(fiveHour: 60, sevenDay: 10, error: nil)
+            equal(s.alternative(to: "Work"), nil)
+        }
+
+        // MARK: health
+
+        test("HealthCheck.parse reads lanes doctor --tsv, empty fields kept") {
+            let tsv = "ok\tclaude\tClaude Desktop is installed\tVersion 1.2\t\n"
+                + "warn\twatchdog\tThe watchdog isn't running\tWhy it matters.\twatchdog\n"
+                + "fail\tlauncher:Client Acme\tClient Acme: launcher missing\t\tlauncher:Client Acme\n"
+                + "bogus\tx\tUnknown status\t\t\n"
+                + "ok\tshort\n"
+                + "ok\tsetup\tLaunchers point at this copy of Lanes"
+            let c = HealthCheck.parse(tsv: tsv)
+            equal(c.map(\.id), ["claude", "watchdog", "launcher:Client Acme", "setup"])
+            equal(c[0].detail, "Version 1.2")
+            equal(c[0].fix, nil)
+            equal(c[1].status, .warn)
+            equal(c[1].fixTitle, "Fix")
+            equal(c[2].status, .fail)
+            equal(c[2].detail, "")
+            equal(c[2].fix, "launcher:Client Acme")
+            equal(c[2].fixTitle, "Recreate")
+            equal(c[3].detail, "")
+            equal(HealthCheck(id: "s", status: .warn, title: "", fix: "signin:Work").fixTitle, "Open")
+            equal(HealthCheck(id: "x", status: .warn, title: "", fix: "something-new").fixTitle, nil)
+        }
+
+        test("healthNeedsAttention ignores choices and self-healing") {
+            let s = ProfileStore(live: false)
+            s.health = [HealthCheck(id: "login", status: .warn, title: ""),
+                        HealthCheck(id: "clone:Work", status: .warn, title: ""),
+                        HealthCheck(id: "claude", status: .ok, title: "")]
+            equal(s.healthIssues.count, 2)
+            expect(!s.healthNeedsAttention)
+            s.health.append(HealthCheck(id: "watchdog", status: .warn, title: ""))
+            expect(s.healthNeedsAttention)
+        }
+
+        test("Try-it actions parse, skipping unknown ones") {
+            equal(TryAction.parse(" copy lanes claude --best | statusline | test-alert | settings status | settings nope | teleport "),
+                  [.copy("lanes claude --best"), .statusLine, .testAlert, .settings(.status)])
+            equal(TryAction.parse("copy"), [])
+        }
+
+        test("Changelog: try comments attach to their release, and stay out of the text") {
+            let md = """
+            <!-- format notes, before any release -->
+            ## 0.10.0 — New things
+            _2026-11-27_
+            <!-- try: copy lanes claude work | statusline -->
+
+            - **One** thing.
+
+            ## 0.9.0 — Old things
+            _2026-11-25_
+
+            - Another.
+            """
+            let e = Changelog.parse(md)
+            equal(e.map(\.version), ["0.10.0", "0.9.0"])
+            equal(e[0].actions, [.copy("lanes claude work"), .statusLine])
+            equal(e[1].actions, [])
+            equal(e[0].blocks.count, 1)
+            expect(e[0].date != nil)
+        }
+
+        test("CHANGELOG.md: every release parses, and try actions are all known") {
+            let text = try String(contentsOfFile: "CHANGELOG.md", encoding: .utf8)
+            let e = Changelog.parse(text)
+            expect(!e.isEmpty)
+            expect(e.allSatisfy { $0.date != nil && !$0.blocks.isEmpty }, "a release without a date or notes")
+            let declared = text.components(separatedBy: "\n").filter { $0.hasPrefix("<!-- try:") }
+                .map { $0.components(separatedBy: "|").count }.reduce(0, +)
+            equal(e.map(\.actions.count).reduce(0, +), declared)
+        }
+
+        test("StatusLineState parses lanes statusline --tsv") {
+            let tsv = "Default\ton\t/a/settings.json\nWork\tadded\t/b\nAcme\tother\t/c\nOld\tremoved\t/d\nBad\tinvalid\t/e\nshort\n"
+            let s = StatusLineState.parse(tsv: tsv)
+            equal(s.map(\.profile), ["Default", "Work", "Acme", "Old", "Bad"])
+            equal(s.map(\.state), [.on, .on, .other, .off, .invalid])
+            let store = ProfileStore(live: false)
+            store.statusLine = s
+            equal(store.statusLineOn.count, 2)
+            equal(ProfileStore.joined(["A", "B", "C"]), "A, B and C")
+            equal(store.statusLineSummary, "On for 2 of 5 profiles. Acme has its own. Can't read the settings of Bad.")
+        }
+
+        print(failures == 0 ? "unit tests: \(checks) checks passed" : "unit tests: \(failures) of \(checks) failed")
+        exit(failures == 0 ? 0 : 1)
+    }
+}

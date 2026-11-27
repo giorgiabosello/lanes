@@ -87,7 +87,8 @@ levels are yours to change in Settings), and name the profile with the most
 room. A **pace alert** warns you earlier, when a limit is on track to run
 out well before it resets. Once a limit passes the first level, another one
 lands the minute it resets, scheduled with macOS so it arrives even if Lanes
-has quit.
+has quit. Alerts have buttons: **Open** the profile with the most room,
+**Mute Until Reset**, or, on a pace alert, **Notify Me at Reset**.
 
 <br clear="right">
 
@@ -119,21 +120,66 @@ whichever Claude happens to be running.
 - **A desktop widget** (macOS 14+) in three sizes, with live reset
   countdowns. Click a profile to open it. Add it with *Edit Widgets…* and
   search for "Lanes".
-- **A command line**, `lanes`, for scripts and status lines:
-  `lanes usage --json`, `lanes launch --best`, `lanes history --days 7`.
-  See the [reference](docs/cli.md).
-- **Isolated Claude Code, too.** The Code and Cowork tabs in each profile
-  get their own Claude Code config, so accounts never leak into each other
-  or into your terminal `claude`.
 - **Hands-off updates.** Each profile installs Claude's updates on its
   own. A watchdog catches the relaunch after an update and puts the app
   back on the right account.
+- **A health check.** **Settings → Status** checks what Lanes depends on,
+  such as Claude Desktop, launchers, the watchdog, the Keychain item and
+  each sign-in, and fixes what it can in one click. An orange dot on the
+  gear means something needs a look.
 
 | Shortcut | |
 |---|---|
 | <kbd>⌥⌘P</kbd> | Open the menu bar panel |
 | <kbd>⌥⌘B</kbd> | Open the profile with the most room |
 | <kbd>⌘N</kbd> · <kbd>⌘R</kbd> · <kbd>⌘,</kbd> | New profile · refresh usage · settings (in the window) |
+
+## In the terminal
+
+Everything the app does goes through one command, `lanes`, and so can your
+scripts. The installer puts it on your PATH.
+
+### Claude Code on any account
+
+Each profile's Code and Cowork tabs already run Claude Code on a config of
+their own, so accounts never leak into each other. `lanes claude` brings
+that same config to your terminal:
+
+```sh
+lanes claude work            # Claude Code on Work's account, settings and history
+lanes claude --best          # on whichever profile has the most room right now
+lanes claude work -p "summarize CHANGELOG.md" > summary.txt
+```
+
+Your plain `claude` keeps using `~/.claude`, the Default lane. Signed in
+to a profile's Code tab already? Then its terminal is signed in too.
+
+### Usage in the status line
+
+`lanes usage --statusline` prints the usage of the profile a Claude Code
+session runs on, in one line, and turns orange and red as limits fill:
+
+```
+Work · 5h 86% resets in 1h 10m · week 41% · out ~15:40
+```
+
+Turn it on for every profile in **Settings → General**, or with
+`lanes statusline on`. Lanes adds one setting to each profile's Claude Code
+settings, keeps a copy of the file, and leaves a status line you set up
+yourself alone.
+
+### Scripts
+
+```sh
+lanes usage                  # every profile's 5-hour and weekly usage
+lanes usage --json           # the same for jq, prompts and tmux
+lanes launch --best          # open the Claude with the most room
+lanes history work --days 7  # a week of readings, as CSV
+lanes doctor --fix           # check the setup and repair what it can
+```
+
+None of these call the network. They read what the app last saved. The
+[command line guide](docs/cli.md) has every command and the data formats.
 
 ## Install
 

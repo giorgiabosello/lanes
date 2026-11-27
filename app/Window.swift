@@ -24,7 +24,7 @@ struct LanesWindow: View {
     private func hideLaunchWindow() {
         guard store.live, !Self.launchHandled else { return }
         Self.launchHandled = true
-        guard !store.showAdd, store.removeRequest == nil else { return }
+        guard !store.showAdd, !store.showWelcome, store.removeRequest == nil else { return }
         // By title, or by the scene id SwiftUI puts in the window identifier,
         // in case a hidden title bar ever leaves the title empty.
         DispatchQueue.main.async {
@@ -69,6 +69,7 @@ struct LanesWindow: View {
             hideLaunchWindow()
         }
         .onReceive(store.$removeRequest) { _ in takeRemoveRequest() }
+        .sheet(isPresented: $store.showWelcome) { WelcomeSheet(store: store) }
         .sheet(isPresented: $store.showAdd) {
             AddSheet(existing: store.profiles.map(\.name), routesLinks: store.routeLinks,
                      initialColor: freeColor) { name, color in store.add(name, color: color) }
@@ -133,12 +134,12 @@ struct LanesWindow: View {
             .buttonStyle(HoverButtonStyle(padding: EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)))
             .keyboardShortcut("r")
             .help("Refresh usage (⌘R)")
-            Button { openWindow(id: "settings") } label: {
-                Image(systemName: "gearshape").frame(width: 18, height: 18)
+            Button { SettingsGear.prepare(store); openWindow(id: "settings") } label: {
+                SettingsGear(flagged: store.healthNeedsAttention, size: 18)
             }
             .buttonStyle(HoverButtonStyle(padding: EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)))
             .keyboardShortcut(",")
-            .help("Settings (⌘,)")
+            .help(store.healthNeedsAttention ? "Settings (⌘,): something needs a look" : "Settings (⌘,)")
             Button { store.showAdd = true } label: {
                 Label("New Profile", systemImage: "plus")
             }
@@ -172,7 +173,8 @@ struct LanesWindow: View {
                     },
                     launch: { store.launch(p) },
                     reveal: { store.revealData(p) },
-                    remove: p.isDefault ? nil : { removing = p }
+                    remove: p.isDefault ? nil : { removing = p },
+                    retry: { store.refreshUsage() }
                 ) {
                     LaneDetail(
                         profile: p,
@@ -237,6 +239,7 @@ struct LaneRow<Detail: View>: View {
     let launch: () -> Void
     let reveal: () -> Void
     let remove: (() -> Void)?
+    var retry: (() -> Void)? = nil
     @ViewBuilder let detail: () -> Detail
     @State private var hovering = false
 
@@ -252,7 +255,7 @@ struct LaneRow<Detail: View>: View {
                 TintedClaudeIcon(color: profile.color, size: 42)
                 identity
                     .frame(width: 168, alignment: .leading)
-                UsagePair(usage: usage, tint: tint)
+                UsagePair(usage: usage, tint: tint, signIn: launch, retry: retry)
                     .frame(maxWidth: 340)
                 Spacer(minLength: 12)
                 actions

@@ -7,6 +7,7 @@ import AppKit
 
 struct MenuBarLabel: View {
     @ObservedObject var store: ProfileStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let values = store.profiles.map { p -> Double? in
@@ -14,6 +15,8 @@ struct MenuBarLabel: View {
             return u.fiveHour
         }
         Image(nsImage: MenuBarGlyph.image(levels: values, percent: values.compactMap { $0 }.max()))
+            // Always on screen, so it opens Settings for AppKit windows.
+            .onChange(of: store.settingsRequest) { _ in openWindow(id: "settings") }
     }
 }
 
@@ -153,11 +156,11 @@ struct MenuPanel: View {
             }
             .buttonStyle(HoverButtonStyle(padding: EdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)))
             .help("Refresh usage")
-            Button { show("settings") } label: {
-                Image(systemName: "gearshape").frame(width: 16, height: 16)
+            Button { SettingsGear.prepare(store); show("settings") } label: {
+                SettingsGear(flagged: store.healthNeedsAttention, size: 16)
             }
             .buttonStyle(HoverButtonStyle(padding: EdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)))
-            .help("Settings")
+            .help(store.healthNeedsAttention ? "Settings: something needs a look" : "Settings")
         }
         .foregroundStyle(.secondary)
         .padding(.leading, 16)
@@ -320,7 +323,7 @@ struct PanelLane: View {
                             RunState(running: true)
                         }
                     }
-                    UsagePair(usage: usage, tint: tint, compact: true, spacing: 14)
+                    UsagePair(usage: usage, tint: tint, compact: true, spacing: 14, signIn: launch)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
